@@ -20,7 +20,6 @@ import (
 	"github.com/mitstack-eu/operator-kit/v2/events"
 	"github.com/mitstack-eu/operator-kit/v2/ghapi"
 	"github.com/mitstack-eu/operator-kit/v2/observe"
-	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -456,11 +455,8 @@ func newEnv(t *testing.T, opts ...envOption) *env {
 	swap(t, &newGitHubClient, func(_, token string) *ghapi.Client {
 		return ghapi.NewClient(e.github.server.URL, token, e.github.server.Client())
 	})
-	swap(t, &toolsImage, func() string { return testutil.ToolsImage })
 	var reports observe.NodeReportsAPI = e.reports
 	swap(t, &nodeReports, reports)
-	t.Setenv(envLogExportAddress, testutil.LogExport(t).Endpoint)
-	t.Setenv(envLogExportCA, string(testutil.LogExport(t).CA))
 	return e
 }
 

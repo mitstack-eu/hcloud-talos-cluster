@@ -5,7 +5,7 @@ go 1.26.10
 require (
 	github.com/hetznercloud/hcloud-go/v2 v2.49.0
 	github.com/mitstack-eu/operator-kit/v2 v2.8.0
-	github.com/mitstack-eu/talos-cluster-kit v0.1.0
+	github.com/mitstack-eu/talos-cluster-kit v0.3.0
 	github.com/stretchr/testify v1.12.1
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 )

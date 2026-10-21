@@ -157,14 +157,13 @@ func TestSubscribe_RefusesBeforeAnyChange(t *testing.T) {
 		{name: "a server type the image cannot run on is refused", opts: []envOption{withParam("serverType", "cax21")}, want: `params["serverType"] is "cax21"`},
 		{name: "a cluster that hosts the platform is refused", opts: []envOption{withParam("hostsPlatform", "true")}, want: "hostsPlatform"},
 		{
-			name:  "a release with no tools image pinned is refused",
-			setup: func(t *testing.T) { swap(t, &toolsImage, func() string { return "" }) },
-			want:  "pins no tools image",
-		},
-		{
-			name:  "an operator host with no log receiver is refused",
-			setup: func(t *testing.T) { t.Setenv(envLogExportAddress, "") },
-			want:  envLogExportAddress,
+			name: "a build against a kit whose tools image is unreleased is refused",
+			setup: func(t *testing.T) {
+				swap(t, &toolsImage, func() string {
+					return "ghcr.io/mitstack-eu/talos-cluster-kit-tools:unreleased@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+				})
+			},
+			want: "tools-image-unreleased",
 		},
 	}
 	for _, tc := range cases {

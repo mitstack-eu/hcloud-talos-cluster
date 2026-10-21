@@ -17,6 +17,7 @@ import (
 	"github.com/mitstack-eu/operator-kit/v2/contract"
 	"github.com/mitstack-eu/talos-cluster-kit/image"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"
@@ -119,10 +120,12 @@ func TestBuilder_TheApplicationSyncsTheClusterRepositoryAndTheEnrolmentNamesTheP
 	jobs := testutil.Kind(manifests["mitstack-cluster-tokens"], "Job")
 	require.Len(t, jobs, 1, "enrolment Jobs")
 	container := testutil.Field(t, jobs[0], "spec", "template", "spec", "containers", "0")
-	assert.Equal(t, testutil.ToolsImage, testutil.Field(t, container, "image"), "the enrolment's image")
+	assert.Equal(t, tools.Image, testutil.Field(t, container, "image"), "the enrolment's image")
 	assert.Contains(t, testutil.Field(t, container, "env"), map[string]any{"name": "PLATFORM_URL", "value": platformURL})
 	cronJobs := testutil.Kind(manifests["mitstack-node-report"], "CronJob")
 	require.Len(t, cronJobs, 1, "node report CronJobs")
+	report := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0")
+	assert.Equal(t, tools.Image, testutil.Field(t, report, "image"), "the node report's image")
 }
 
 func TestGateway_RunsTheKitsCloudConfigAndThenBootstrapsTheFirstNodeWithAShortLivedAdminTalosconfig(t *testing.T) {
