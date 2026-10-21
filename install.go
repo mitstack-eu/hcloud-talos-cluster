@@ -49,10 +49,17 @@ func (r *blockResource) install(ctx context.Context, c convergence, site cluster
 	if err != nil {
 		return err
 	}
+	if err := createServers(ctx, c, site, inst); err != nil {
+		return rollBackInstall(ctx, c, err)
+	}
+	return nil
+}
+
+func createServers(ctx context.Context, c convergence, site clusterSite, inst installation) error {
 	if err := createGateway(ctx, c, site, inst); err != nil {
 		return err
 	}
-	_, err = c.api.CreateServer(ctx, serverSpec{
+	_, err := c.api.CreateServer(ctx, serverSpec{
 		Name:        resourceName(c.req.params.appName, c.req.subID, roleBuilder),
 		ServerType:  c.req.params.serverType,
 		Location:    c.req.params.location,
@@ -66,6 +73,25 @@ func (r *blockResource) install(ctx context.Context, c convergence, site cluster
 		return fmt.Errorf("creating the image builder: %w", err)
 	}
 	return nil
+}
+
+// rollBackInstall deletes whatever gateway and builder a failed install made, since the keys they were made with
+// are gone with this call, so the next Ensure installs anew.
+func rollBackInstall(ctx context.Context, c convergence, cause error) error {
+	errs := []error{cause}
+	for _, r := range []role{roleGateway, roleBuilder} {
+		servers, err := c.api.ListServers(ctx, roleSelector(c.req.subID, r))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("listing the %s of the failed install: %w", r, err))
+			continue
+		}
+		for _, s := range servers {
+			if err := c.api.DeleteServer(ctx, s.ID); err != nil {
+				errs = append(errs, fmt.Errorf("deleting the %s %d of the failed install: %w", r, s.ID, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func readInstallInputs(req ensureRequest, site clusterSite, now time.Time) (installInputs, error) {

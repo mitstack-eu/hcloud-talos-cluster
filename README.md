@@ -6,8 +6,12 @@ Talos Kubernetes cluster on Hetzner Cloud servers and provides the type
 the block. A block is a unit of infrastructure an app subscribes to, and its
 operator is the service that serves the block's lifecycle calls, as
 [the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md)
-defines. The Talos install itself comes from
-[talos-cluster-kit](https://github.com/mitstack-eu/talos-cluster-kit), and
+defines. Talos Linux is an operating system that runs only Kubernetes and is
+managed through an API, with no shell and no SSH. The Talos install comes from
+[talos-cluster-kit](https://github.com/mitstack-eu/talos-cluster-kit), a Go
+module of renders that both Hetzner cluster blocks import, apart from the
+operator kit the glossary calls the kit. The block's lifecycle handling comes
+from that operator kit, `github.com/mitstack-eu/operator-kit/v2`, and
 [ADR 0095](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0095-mitstack-clusters-run-talos-across-fsn1-nbg1-and-hel1-with-a-load-balancer-per-location.md)
 records the design.
 
@@ -54,18 +58,32 @@ these steps:
 2. The builder pulls imager through the gateway, builds the image and powers
    itself off. A call that finds the builder off snapshots its disk, deletes
    the builder and creates the node from the snapshot.
-3. The gateway finds the node among the addresses its flow record holds,
-   proves it by the node's Talos API certificate, and runs the kit's etcd
-   bootstrap once with a two-hour admin talosconfig.
-4. Inside the cluster, a Job spends the one-time enrolment token for the
-   report token and the repository token. Argo CD then syncs `cluster/` and
-   `repository-credentials/` from the cluster repository, and the kit's node
+3. The gateway starts etcd, the store that holds the cluster's state, on the
+   node. It finds the node among the addresses its flow record holds. It then
+   checks that the node's Talos API, on port 50000, presents a certificate
+   signed by the cluster's own CA, so an address alone is never trusted. Last,
+   it runs talos-cluster-kit's etcd bootstrap once.
+4. Inside the cluster, a Job calls the platform's enrolment route once. It
+   presents the one-time enrolment token and receives two tokens: the report
+   token, which authenticates the node report, and the repository token, a
+   GitHub token that lets Argo CD read the cluster repository. A CronJob
+   trades the report token for a fresh repository token every 15 minutes.
+   Argo CD then syncs `cluster/` and `repository-credentials/`, and the node
    report posts every five minutes.
+
+Talos accepts the etcd bootstrap call only from its full-rights role, so the
+gateway holds an admin talosconfig for it. A talosconfig is the client
+credential the Talos API takes, and this one expires two hours after the
+install. The gateway's bootstrap deletes its working copy on exit, while the
+copy in the gateway's user data stays readable on the gateway until it
+expires.
 
 The cluster reads present once every resource is in place and the newest node
 report since the node's creation reads every node Ready. A builder that has
 not powered off 30 minutes after its creation is deleted, and the call is
-refused.
+refused. A builder still present beside the snapshot or the node is deleted
+by the next call. An install that fails after creating the gateway deletes the
+gateway and the builder, so the next call installs anew.
 
 The cluster's keys exist only in the call that mints them, the builder's user
 data and the snapshot. A cluster that loses its gateway while the node runs is

@@ -259,8 +259,30 @@ func (r *blockResource) converge(ctx context.Context, c convergence) (bool, erro
 	if _, err := ensureLoadBalancer(ctx, c, ingressLoadBalancer(c.req, network.ID)); err != nil {
 		return false, err
 	}
-	site := clusterSite{network: network, firewall: firewall, apiAddress: privateLB.PrivateIPs[network.ID]}
+	apiAddress, err := privateAddress(ctx, c, privateLB, network.ID)
+	if err != nil || apiAddress == "" {
+		return false, err
+	}
+	site := clusterSite{network: network, firewall: firewall, apiAddress: apiAddress}
 	return r.ensureNode(ctx, c, site)
+}
+
+// privateAddress reads the load balancer back when its create answer named no address on the network, and is
+// empty while Hetzner has not assigned one, so a later call goes on from there.
+func privateAddress(ctx context.Context, c convergence, lb hcLoadBalancer, networkID int64) (string, error) {
+	if addr := lb.PrivateIPs[networkID]; addr != "" {
+		return addr, nil
+	}
+	lbs, err := c.api.ListLoadBalancers(ctx, roleSelector(c.req.subID, role(lb.Labels[keyRole])))
+	if err != nil {
+		return "", fmt.Errorf("reading the %s load balancer's address: %w", lb.Labels[keyRole], err)
+	}
+	for _, found := range lbs {
+		if found.ID == lb.ID {
+			return found.PrivateIPs[networkID], nil
+		}
+	}
+	return "", nil
 }
 
 // clusterSite is the network, firewall and API address every server of the cluster is made with.
@@ -278,6 +300,12 @@ func (r *blockResource) ensureNode(ctx context.Context, c convergence, site clus
 	_, hasNode := c.state.server(roleNode)
 	builder, hasBuilder := c.state.server(roleBuilder)
 	snap, hasSnapshot := c.state.snapshot()
+	if hasBuilder && (hasSnapshot || hasNode) {
+		if err := c.api.DeleteServer(ctx, builder.ID); err != nil {
+			return false, fmt.Errorf("deleting the builder %d, whose disk holds every key of the cluster, beside its snapshot: %w", builder.ID, err)
+		}
+		hasBuilder = false
+	}
 	switch {
 	case hasNode && !hasGateway:
 		return false, handler.Refuse("gateway-lost",

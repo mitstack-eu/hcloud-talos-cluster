@@ -58,6 +58,16 @@ write_repository_token() {
     kubectl label --local -f - argocd.argoproj.io/secret-type=repository -o yaml | kubectl apply -f - > /dev/null
 }
 
+# require_secrets fails unless both Secrets an enrolment writes exist, since a spent token can never write them again.
+require_secrets() {
+  if ! kubectl get secret "$report_secret" -n "$node_namespace" > /dev/null 2>&1; then
+    fail "the enrolment token is spent but the Secret $report_secret in $node_namespace is missing, so the cluster cannot report until it is built again"
+  fi
+  if ! kubectl get secret "$repository_secret" -n "$argocd_namespace" > /dev/null 2>&1; then
+    fail "the enrolment token is spent but the Secret $repository_secret in $argocd_namespace is missing, so Argo CD cannot read the cluster repository until it is built again"
+  fi
+}
+
 enrol() {
   local status
   jq -n --arg id "$SUBSCRIPTION_ID" '{subscriptionId: $id}' > "$work/body"
@@ -68,7 +78,10 @@ enrol() {
       write_repository_token
       echo "cluster-tokens: enrolled subscription $SUBSCRIPTION_ID"
       ;;
-    409) echo "cluster-tokens: subscription $SUBSCRIPTION_ID enrolled already" ;;
+    409)
+      require_secrets
+      echo "cluster-tokens: subscription $SUBSCRIPTION_ID enrolled already"
+      ;;
     *) fail "the platform answered $status to the enrolment: $(jq -r '.error // empty' "$work/answer" 2> /dev/null)" ;;
   esac
 }
