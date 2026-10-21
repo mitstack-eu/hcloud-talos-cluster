@@ -94,12 +94,11 @@ func TestBuilder_EmbedsAConfigurationThatCarriesTheReportTheCredentialsAndTheApp
 	assert.Subset(t, inline, []string{"mitstack-node-report", "mitstack-cluster-tokens", "mitstack-cluster-application"})
 	clusterDocs := testutil.Kind(docs, "KubeClusterConfig")
 	require.Len(t, clusterDocs, 1, "KubeClusterConfig documents")
-	apiLB := e.hetzner.lbSpecs[0]
-	require.Equal(t, string(roleAPI), apiLB.Labels[keyRole])
-	lbs, err := e.hetzner.ListLoadBalancers(e.ctx(), roleSelector(testSub, roleAPI))
+	networks, err := e.hetzner.ListNetworks(e.ctx(), subscriptionSelector(testSub))
 	require.NoError(t, err)
+	require.Len(t, networks, 1)
 	endpoint := testutil.Field(t, clusterDocs[0], "endpoint")
-	assert.Equal(t, "https://"+lbs[0].PrivateIPs[apiLB.NetworkID]+":6443", endpoint, "the control-plane endpoint")
+	assert.Equal(t, "https://"+e.hetzner.loadBalancer(t, roleAPI).PrivateIPs[networks[0].ID]+":6443", endpoint, "the control-plane endpoint")
 	assert.Equal(t, []string{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress}, c.RunCmd[0], "the build command")
 }
 

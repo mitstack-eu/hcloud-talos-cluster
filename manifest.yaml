@@ -21,7 +21,13 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.1.0
+  version: 0.1.1
+  releaseClass: correctness-fix
+  releaseNote: >-
+    A subscribe no longer stops before the gateway when Hetzner has not yet
+    given the API load balancer its private address, because each load
+    balancer now joins the network through Hetzner's attach action at a fixed
+    address and the subscribe goes on to create the gateway and the builder.
   description: >
     Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
     or hel1, booted from its own image with no user data, with Argo CD
