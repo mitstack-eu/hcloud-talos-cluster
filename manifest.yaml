@@ -27,8 +27,8 @@ spec:
     A subscribe no longer fails creating the image builder with Hetzner's
     invalid user_data error, because the builder's machine configuration now
     travels gzipped in its user data, which keeps it under Hetzner's 32 KiB
-    limit, and user data still over the limit is refused before any server
-    is created.
+    limit, and user data still over the limit fails the subscribe before any
+    server is created.
   description: >
     Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
     or hel1, booted from its own image with no user data, with Argo CD
