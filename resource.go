@@ -3,14 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/mitstack-eu/operator-kit/v2/contract"
 	"github.com/mitstack-eu/operator-kit/v2/handler"
-	"github.com/mitstack-eu/talos-cluster-kit/components"
 )
 
 // blockResource keeps no state between calls and finds every resource by label, so each Ensure takes the cluster
@@ -43,9 +41,9 @@ const (
 	typeRepository     = "github.gitops-repository"
 	paramHostsPlatform = "hostsPlatform"
 	// platformURL is where every node enrols and reports, as the manifest's endpoint names the platform.
-	platformURL         = "https://api.mitstack.dev"
-	envLogExportAddress = "MITSTACK_LOG_EXPORT_ENDPOINT"
-	envLogExportCA      = "MITSTACK_LOG_EXPORT_CA"
+	platformURL = "https://api.mitstack.dev"
+	// unreleasedToolsTag is the tag of the zero-digest placeholder tools.Image carries between the kit's releases.
+	unreleasedToolsTag = ":unreleased@"
 )
 
 const (
@@ -128,21 +126,10 @@ func subscriptionID(d contract.Desired) (string, error) {
 	return d.SubscriptionID, nil
 }
 
-// logExport reads the receiver every node exports its logs to, which the operator's host names for every cluster.
-func logExport() (components.LogExport, error) {
-	endpoint, ca := os.Getenv(envLogExportAddress), os.Getenv(envLogExportCA)
-	if endpoint == "" || ca == "" {
-		return components.LogExport{}, handler.Refuse(handler.ClassHostCannotRun,
-			"the operator's host sets no %s and %s, so the nodes would have no log receiver; nothing was changed", envLogExportAddress, envLogExportCA)
-	}
-	return components.LogExport{Endpoint: endpoint, CA: []byte(ca)}, nil
-}
-
 type ensureRequest struct {
 	token, subID string
 	params       clusterParams
 	gh           *githubAccess
-	logs         components.LogExport
 }
 
 func readEnsureRequest(d contract.Desired) (ensureRequest, error) {
@@ -157,12 +144,9 @@ func readEnsureRequest(d contract.Desired) (ensureRequest, error) {
 	if req.params, err = readParams(d); err != nil {
 		return req, err
 	}
-	if toolsImage() == "" {
-		return req, handler.Refuse("tools-image-unpinned",
-			"this release pins no tools image for the node report and enrolment Jobs, so nothing was changed")
-	}
-	if req.logs, err = logExport(); err != nil {
-		return req, err
+	if strings.Contains(toolsImage(), unreleasedToolsTag) {
+		return req, handler.Refuse("tools-image-unreleased",
+			"the block is built against a talos-cluster-kit whose tools image %s is a placeholder, so the node report could not run and nothing was changed; build it against a released kit", toolsImage())
 	}
 	req.gh, err = dialGitHub(d, req.params.appName)
 	return req, err

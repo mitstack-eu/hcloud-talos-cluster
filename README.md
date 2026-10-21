@@ -92,21 +92,17 @@ authority went with it. Unsubscribe deletes every server, load balancer,
 snapshot, firewall and network, then the repository when it carries the
 subscription's mark.
 
-## What the operator's host provides
+## Where the tools image and the logs come from
 
-The operator reads two settings from its environment and refuses a subscribe
-without them, because every node exports its logs over OTLP with TLS verified.
+The node report, the enrolment Job and the token renewal run in the
+talos-cluster-kit tools image, which the kit's own release publishes and signs.
+The block takes it from `tools.Image` in the kit release `go.mod` requires,
+such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.3.0@sha256:16c519dc…`.
+A build against a kit whose `tools.Image` carries the `unreleased` placeholder
+tag refuses every subscribe.
 
-| Variable | What it holds | Example |
-|---|---|---|
-| `MITSTACK_LOG_EXPORT_ENDPOINT` | The OTLP receiver's `host:port` | `otlp.mitstack.dev:4317` |
-| `MITSTACK_LOG_EXPORT_CA` | The PEM certificate the receiver's certificate chains to | `-----BEGIN CERTIFICATE-----` |
-
-The node report and the enrolment Jobs run in the kit's tools image.
-`tools-image.txt` pins that image by digest, and a release whose file is empty
-refuses every subscribe. CI's `tools image` job builds the image from the kit
-release `go.mod` requires, and on `main` pushes it to
-`ghcr.io/mitstack-eu/hcloud-talos-cluster-tools` and signs it.
+The cluster names no log receiver, so each node keeps its logs, and the gateway
+forwards no log port. The operator needs no setting from its host.
 
 ## How you change the block
 

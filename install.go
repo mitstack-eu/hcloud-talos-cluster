@@ -30,7 +30,6 @@ type installInputs struct {
 	subID, appName string
 	repo           clusterRepo
 	apiAddress     netip.Addr
-	logs           components.LogExport
 	now            time.Time
 }
 
@@ -101,7 +100,7 @@ func readInstallInputs(req ensureRequest, site clusterSite, now time.Time) (inst
 	}
 	return installInputs{
 		subID: req.subID, appName: req.params.appName, repo: req.gh.repo,
-		apiAddress: apiAddress, logs: req.logs, now: now,
+		apiAddress: apiAddress, now: now,
 	}, nil
 }
 
@@ -158,7 +157,6 @@ func renderInstallation(in installInputs) (installation, error) {
 		APIAddresses:   []netip.Addr{in.apiAddress},
 		Gateways:       []netip.Addr{gatewayAddr},
 		GatewayCA:      gatewayCA.Cert,
-		Logs:           in.logs,
 	}, nodeconfig.Node{})
 	if err != nil {
 		return installation{}, err
@@ -190,7 +188,6 @@ func renderGateway(in installInputs, ca gateway.CA, set components.Set, secrets 
 		TLS:             tls,
 		Components:      set,
 		ManifestBaseURL: gateway.ReleaseURL(release),
-		Logs:            in.logs,
 	})
 	if err != nil {
 		return "", err

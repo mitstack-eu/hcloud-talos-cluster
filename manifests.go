@@ -11,6 +11,7 @@ import (
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
 	"github.com/mitstack-eu/talos-cluster-kit/report"
+	"github.com/mitstack-eu/talos-cluster-kit/tools"
 )
 
 var (
@@ -20,12 +21,10 @@ var (
 	clusterApplicationTemplate string
 	//go:embed scripts/cluster-tokens.sh
 	clusterTokensScript string
-	//go:embed tools-image.txt
-	toolsImageFile string
 )
 
-// toolsImage is the kit's tools image as this block's CI published it, by digest, or empty until a release pins it.
-var toolsImage = func() string { return strings.TrimSpace(toolsImageFile) }
+// toolsImage is a variable so a test can stand in the placeholder an unreleased kit carries.
+var toolsImage = func() string { return tools.Image }
 
 var templateFuncs = template.FuncMap{"indent": indent}
 
