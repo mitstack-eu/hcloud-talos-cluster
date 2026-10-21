@@ -58,6 +58,16 @@ type fakeHetzner struct {
 	failPowerOn error
 	// lateLBAddress leaves a new load balancer's private address out of the create answer, as Hetzner may.
 	lateLBAddress bool
+	// lbAddressAfterReads leaves the address of a load balancer created on a network unassigned for this many reads.
+	lbAddressAfterReads int
+	pendingLBAddress    map[int64]pendingAddress
+}
+
+// pendingAddress is a load balancer's address on a network, which Hetzner assigns once reads more reads have passed.
+type pendingAddress struct {
+	networkID int64
+	ip        string
+	reads     int
 }
 
 func newFakeHetzner(now func() time.Time) *fakeHetzner {
@@ -65,6 +75,7 @@ func newFakeHetzner(now func() time.Time) *fakeHetzner {
 		nextID: 1000, nextAddress: 5, now: now,
 		servers: map[int64]*hcServer{}, userData: map[int64]string{}, networks: map[int64]*hcNetwork{},
 		firewalls: map[int64]*hcFirewall{}, loadBalancers: map[int64]*hcLoadBalancer{}, snapshots: map[int64]*hcSnapshot{},
+		pendingLBAddress: map[int64]pendingAddress{},
 	}
 }
 
@@ -206,6 +217,18 @@ func (f *fakeHetzner) DeleteFirewall(_ context.Context, id int64) error {
 func (f *fakeHetzner) ListLoadBalancers(_ context.Context, sel string) ([]hcLoadBalancer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	for _, id := range slices.Sorted(maps.Keys(f.pendingLBAddress)) {
+		if !matches(f.loadBalancers[id].Labels, sel) {
+			continue
+		}
+		p := f.pendingLBAddress[id]
+		if p.reads--; p.reads > 0 {
+			f.pendingLBAddress[id] = p
+			continue
+		}
+		f.loadBalancers[id].PrivateIPs[p.networkID] = p.ip
+		delete(f.pendingLBAddress, id)
+	}
 	return selected(f.loadBalancers, func(lb *hcLoadBalancer) map[string]string { return lb.Labels }, sel), nil
 }
 
@@ -221,7 +244,12 @@ func (f *fakeHetzner) CreateLoadBalancer(_ context.Context, spec loadBalancerSpe
 	}
 	f.loadBalancers[lb.ID] = lb
 	f.lbSpecs = append(f.lbSpecs, spec)
+	if f.lbAddressAfterReads > 0 {
+		f.pendingLBAddress[lb.ID] = pendingAddress{networkID: spec.NetworkID, ip: lb.PrivateIPs[spec.NetworkID], reads: f.lbAddressAfterReads}
+		lb.PrivateIPs = map[int64]string{}
+	}
 	answer := *lb
+	answer.PrivateIPs = maps.Clone(lb.PrivateIPs)
 	if f.lateLBAddress {
 		answer.PrivateIPs = map[int64]string{}
 	}

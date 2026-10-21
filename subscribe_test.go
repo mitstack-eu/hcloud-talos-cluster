@@ -269,3 +269,13 @@ func TestSubscribe_ReadsTheAPIAddressFromHetznerWhenTheCreateAnswerLacksIt(t *te
 
 	assert.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
 }
+
+func TestSubscribe_OneSubscribeBuildsTheGatewayAndBuilderWhenTheAPIAddressIsAssignedLate(t *testing.T) {
+	e := newEnv(t)
+	e.hetzner.lbAddressAfterReads = 2
+
+	require.NoError(t, e.ensure())
+
+	assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the one subscribe")
+	assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the one subscribe")
+}
