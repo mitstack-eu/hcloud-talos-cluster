@@ -38,24 +38,33 @@ fi`,
 	}
 }
 
-func runBuild(t *testing.T, imagerExit int) (out string, err error, tools *testutil.Tools, dir string) {
+// scriptRun is one run of a script: its output and exit error, its fakes' calls, and its scratch directory.
+type scriptRun struct {
+	out   string
+	err   error
+	tools *testutil.Tools
+	dir   string
+}
+
+func runBuild(t *testing.T, imagerExit int) scriptRun {
 	t.Helper()
-	dir = t.TempDir()
-	tools = testutil.NewTools(t, buildFakes(imagerExit))
+	dir := t.TempDir()
+	tools := testutil.NewTools(t, buildFakes(imagerExit))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "proc", "sys", "kernel"), 0o755))
 	config := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(config, []byte("machine: {token: secret}"), 0o600))
 	env := tools.Env("BUILD_WORK_DIR="+filepath.Join(dir, "work"), "BUILD_DISK="+filepath.Join(dir, "disk"),
 		"BUILD_RESOLV_CONF="+filepath.Join(dir, "resolv.conf"), "BUILD_PROC="+filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1")
-	out, err = testutil.RunBash(t, buildImageScript, env, testImager, config, routerAddress)
-	return out, err, tools, dir
+	out, err := testutil.RunBash(t, buildImageScript, env, testImager, config, routerAddress)
+	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
 
 func TestBuildImage_RoutesThroughTheGatewayBuildsWritesTheDiskAndPowersOff(t *testing.T) {
-	out, err, tools, dir := runBuild(t, 0)
+	run := runBuild(t, 0)
 
-	require.NoError(t, err, out)
-	calls := tools.Calls(t)
+	require.NoError(t, run.err, run.out)
+	dir := run.dir
+	calls := run.tools.Calls(t)
 	require.GreaterOrEqual(t, len(calls), 4, "calls: %v", calls)
 	assert.Equal(t, "ip route replace default via "+routerAddress, calls[0])
 	assert.Equal(t, "docker pull --quiet "+testImager, calls[1])
@@ -68,18 +77,18 @@ func TestBuildImage_RoutesThroughTheGatewayBuildsWritesTheDiskAndPowersOff(t *te
 	resolv, _ := os.ReadFile(filepath.Join(dir, "resolv.conf"))
 	assert.Equal(t, "nameserver 185.12.64.1\nnameserver 185.12.64.2\n", string(resolv))
 	assert.NoFileExists(t, filepath.Join(dir, "config.yaml"), "the configuration outlives the build")
-	assert.NotContains(t, out, "every key of the cluster", "imager's output reached the log")
+	assert.NotContains(t, run.out, "every key of the cluster", "imager's output reached the log")
 }
 
 func TestBuildImage_AFailedImagerWritesNothingAndKeepsTheBuilderRunning(t *testing.T) {
-	out, err, tools, dir := runBuild(t, 1)
+	run := runBuild(t, 1)
 
-	require.Error(t, err)
-	assert.Contains(t, out, "imager failed")
-	assert.NotContains(t, out, "every key of the cluster", "imager's output reached the log")
-	assert.NoFileExists(t, filepath.Join(dir, "disk"), "the disk was written")
-	assert.NoFileExists(t, filepath.Join(dir, "proc", "sysrq-trigger"), "the builder powered off")
-	for _, call := range tools.Calls(t) {
+	require.Error(t, run.err)
+	assert.Contains(t, run.out, "imager failed")
+	assert.NotContains(t, run.out, "every key of the cluster", "imager's output reached the log")
+	assert.NoFileExists(t, filepath.Join(run.dir, "disk"), "the disk was written")
+	assert.NoFileExists(t, filepath.Join(run.dir, "proc", "sysrq-trigger"), "the builder powered off")
+	for _, call := range run.tools.Calls(t) {
 		assert.False(t, strings.HasPrefix(call, "dd "), "dd ran: %s", call)
 	}
 }
@@ -150,7 +159,7 @@ func platform(t *testing.T, enrolStatus int) (*httptest.Server, *[]string) {
 	return srv, &seen
 }
 
-func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string) (string, error, *testutil.Tools) {
+func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string) scriptRun {
 	t.Helper()
 	dir := t.TempDir()
 	ca := filepath.Join(dir, "ca.crt")
@@ -160,18 +169,18 @@ func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string) (s
 	env := tools.Env("PLATFORM_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "REPO_URL=https://github.com/"+testOwner+"/shop-cluster",
 		"TOKEN_FILE="+filepath.Join(dir, "token"), "CURL_CA_BUNDLE="+ca, "KUBE_API="+srv.URL, "KUBE_ACCOUNT_DIR="+dir, "CALL_ATTEMPTS=1")
 	out, err := testutil.RunBash(t, clusterTokensScript, env, verb)
-	return out, err, tools
+	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
 
 func TestClusterTokens_EnrolSpendsTheEnrolmentTokenAndWritesBothSecrets(t *testing.T) {
 	srv, seen := platform(t, http.StatusOK)
 
-	out, err, tools := runClusterTokens(t, srv, "enrol", "enrolment-token")
+	run := runClusterTokens(t, srv, "enrol", "enrolment-token")
 
-	require.NoError(t, err, out)
+	require.NoError(t, run.err, run.out)
 	assert.Equal(t, []string{"POST /v1/cluster-enrolments Bearer enrolment-token"}, *seen)
 	var created []string
-	for _, call := range tools.Calls(t) {
+	for _, call := range run.tools.Calls(t) {
 		if strings.HasPrefix(call, "kubectl create secret") {
 			created = append(created, strings.Fields(call)[4]+" in "+strings.Fields(call)[6])
 		}
@@ -182,18 +191,18 @@ func TestClusterTokens_EnrolSpendsTheEnrolmentTokenAndWritesBothSecrets(t *testi
 func TestClusterTokens_EnrolTreatsASpentTokenAsEnrolled(t *testing.T) {
 	srv, _ := platform(t, http.StatusConflict)
 
-	out, err, _ := runClusterTokens(t, srv, "enrol", "enrolment-token")
+	run := runClusterTokens(t, srv, "enrol", "enrolment-token")
 
-	require.NoError(t, err, out)
-	assert.Contains(t, out, "enrolled already")
+	require.NoError(t, run.err, run.out)
+	assert.Contains(t, run.out, "enrolled already")
 }
 
 func TestClusterTokens_RenewPatchesEachAppSlicesRepositorySecret(t *testing.T) {
 	srv, seen := platform(t, http.StatusOK)
 
-	out, err, _ := runClusterTokens(t, srv, "renew", "report-token")
+	run := runClusterTokens(t, srv, "renew", "report-token")
 
-	require.NoError(t, err, out)
+	require.NoError(t, run.err, run.out)
 	assert.Equal(t, []string{
 		"POST /v1/cluster-repository-tokens Bearer report-token",
 		"PATCH /api/v1/namespaces/argocd/secrets/app-repository-orbit Bearer report-token",
