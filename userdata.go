@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"mime/multipart"
 	"net/textproto"
@@ -39,6 +41,7 @@ type cloudFile struct {
 	Path        string `yaml:"path"`
 	Permissions string `yaml:"permissions"`
 	Content     string `yaml:"content"`
+	Encoding    string `yaml:"encoding,omitempty"`
 }
 
 // mergeRule tells cloud-init to append this part's lists to the kit's, so neither part replaces the other's files or commands.
@@ -62,14 +65,44 @@ func (c cloudConfig) render() (string, error) {
 }
 
 // builderUserData holds every key of the cluster, which is why the builder is deleted once its disk is a snapshot.
+// The configuration is gzipped, since as text it is over Hetzner's user data limit, and a result still over it is refused.
 func builderUserData(machineConfig []byte) (string, error) {
-	return cloudConfig{
+	config, err := gzipBase64(machineConfig)
+	if err != nil {
+		return "", err
+	}
+	out, err := cloudConfig{
 		WriteFiles: []cloudFile{
-			{Path: builderConfigPath, Permissions: "0600", Content: string(machineConfig)},
+			{Path: builderConfigPath, Permissions: "0600", Content: config, Encoding: gzipBase64Encoding},
 			{Path: builderScriptPath, Permissions: "0755", Content: buildImageScript},
 		},
 		RunCmd: [][]string{{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress}},
 	}.render()
+	if err != nil {
+		return "", err
+	}
+	if len(out) > gateway.UserDataLimit {
+		return "", fmt.Errorf("the builder's user data is %d bytes, over Hetzner's %d", len(out), gateway.UserDataLimit)
+	}
+	return out, nil
+}
+
+// gzipBase64Encoding is the write_files encoding cloud-init decodes as base64 and then gunzips.
+const gzipBase64Encoding = "gz+b64"
+
+func gzipBase64(content []byte) (string, error) {
+	var zipped bytes.Buffer
+	w, err := gzip.NewWriterLevel(&zipped, gzip.BestCompression)
+	if err != nil {
+		return "", fmt.Errorf("compressing the builder's configuration: %w", err)
+	}
+	if _, err := w.Write(content); err != nil {
+		return "", fmt.Errorf("compressing the builder's configuration: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return "", fmt.Errorf("compressing the builder's configuration: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(zipped.Bytes()), nil
 }
 
 // firstNodeBootstrap is the gateway's one etcd bootstrap: an admin talosconfig and the time it expires.
