@@ -58,6 +58,19 @@ type fakeHetzner struct {
 	failPowerOn error
 	// lateLBAddress leaves a new load balancer's private address out of the create answer, as Hetzner may.
 	lateLBAddress bool
+	// lbAddressAfterReads leaves a new load balancer's private address unassigned for this many reads after its create.
+	lbAddressAfterReads int
+	// builderOffAfterReads powers a builder off once its status has been read this many times.
+	builderOffAfterReads int
+	pendingLBAddress     map[int64]pendingAddress
+	builderReads         map[int64]int
+}
+
+// pendingAddress is a load balancer address Hetzner assigns only after reads more reads.
+type pendingAddress struct {
+	networkID int64
+	ip        string
+	reads     int
 }
 
 func newFakeHetzner(now func() time.Time) *fakeHetzner {
@@ -65,6 +78,7 @@ func newFakeHetzner(now func() time.Time) *fakeHetzner {
 		nextID: 1000, nextAddress: 5, now: now,
 		servers: map[int64]*hcServer{}, userData: map[int64]string{}, networks: map[int64]*hcNetwork{},
 		firewalls: map[int64]*hcFirewall{}, loadBalancers: map[int64]*hcLoadBalancer{}, snapshots: map[int64]*hcSnapshot{},
+		pendingLBAddress: map[int64]pendingAddress{}, builderReads: map[int64]int{},
 	}
 }
 
@@ -107,7 +121,17 @@ func (f *fakeHetzner) ListServers(_ context.Context, sel string) ([]hcServer, er
 		f.failNext = nil
 		return nil, err
 	}
-	return selected(f.servers, func(s *hcServer) map[string]string { return s.Labels }, sel), nil
+	found := selected(f.servers, func(s *hcServer) map[string]string { return s.Labels }, sel)
+	for i, s := range found {
+		if f.builderOffAfterReads == 0 || s.Labels[keyRole] != string(roleBuilder) || s.Status == "off" {
+			continue
+		}
+		f.builderReads[s.ID]++
+		if f.builderReads[s.ID] >= f.builderOffAfterReads {
+			f.servers[s.ID].Status, found[i].Status = "off", "off"
+		}
+	}
+	return found, nil
 }
 
 func (f *fakeHetzner) CreateServer(_ context.Context, spec serverSpec) (hcServer, error) {
@@ -206,6 +230,18 @@ func (f *fakeHetzner) DeleteFirewall(_ context.Context, id int64) error {
 func (f *fakeHetzner) ListLoadBalancers(_ context.Context, sel string) ([]hcLoadBalancer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	for _, id := range slices.Sorted(maps.Keys(f.pendingLBAddress)) {
+		if !matches(f.loadBalancers[id].Labels, sel) {
+			continue
+		}
+		p := f.pendingLBAddress[id]
+		if p.reads--; p.reads > 0 {
+			f.pendingLBAddress[id] = p
+			continue
+		}
+		f.loadBalancers[id].PrivateIPs[p.networkID] = p.ip
+		delete(f.pendingLBAddress, id)
+	}
 	return selected(f.loadBalancers, func(lb *hcLoadBalancer) map[string]string { return lb.Labels }, sel), nil
 }
 
@@ -221,7 +257,12 @@ func (f *fakeHetzner) CreateLoadBalancer(_ context.Context, spec loadBalancerSpe
 	}
 	f.loadBalancers[lb.ID] = lb
 	f.lbSpecs = append(f.lbSpecs, spec)
+	if f.lbAddressAfterReads > 0 {
+		f.pendingLBAddress[lb.ID] = pendingAddress{networkID: spec.NetworkID, ip: lb.PrivateIPs[spec.NetworkID], reads: f.lbAddressAfterReads}
+		lb.PrivateIPs = map[int64]string{}
+	}
 	answer := *lb
+	answer.PrivateIPs = maps.Clone(lb.PrivateIPs)
 	if f.lateLBAddress {
 		answer.PrivateIPs = map[int64]string{}
 	}
@@ -506,6 +547,28 @@ func (e *env) subscribe() contract.Observation {
 	e.now = e.now.Add(5 * time.Minute)
 	e.reports.report(e.now, true)
 	return e.observe()
+}
+
+// platformSettlePolls is how many validates the test's platform sends after its one subscribe, a minute apart.
+const platformSettlePolls = 20
+
+// subscribeOnce plays the platform: one subscribe, then only validates while the subscription settles, so the block
+// gets no second Ensure.
+func (e *env) subscribeOnce() error {
+	e.t.Helper()
+	if err := e.ensure(); err != nil {
+		return err
+	}
+	for range platformSettlePolls {
+		e.now = e.now.Add(time.Minute)
+		if len(e.hetzner.byRole(e.t, roleNode)) == 1 {
+			e.reports.report(e.now, true)
+		}
+		if e.observe().State == contract.Present {
+			return nil
+		}
+	}
+	return nil
 }
 
 func (e *env) repo() string {

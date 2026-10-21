@@ -269,3 +269,39 @@ func TestSubscribe_ReadsTheAPIAddressFromHetznerWhenTheCreateAnswerLacksIt(t *te
 
 	assert.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
 }
+
+func TestSubscribe_OneSubscribeBuildsTheGatewayAndBuilderWhenTheAPIAddressIsAssignedLate(t *testing.T) {
+	e := newEnv(t)
+	e.hetzner.lbAddressAfterReads = 2
+
+	require.NoError(t, e.ensure())
+
+	assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the one subscribe")
+	assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the one subscribe")
+}
+
+func TestSubscribe_OneSubscribeCarriesTheClusterToItsNodeWithNoSecondEnsure(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		lbAddressAfterReads  int
+		builderOffAfterReads int
+	}{
+		{name: "the API address is assigned at once", builderOffAfterReads: 3},
+		{name: "the API address is assigned late", lbAddressAfterReads: 2, builderOffAfterReads: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.hetzner.lbAddressAfterReads = tc.lbAddressAfterReads
+			e.hetzner.builderOffAfterReads = tc.builderOffAfterReads
+
+			require.NoError(t, e.subscribeOnce())
+
+			snaps, err := e.hetzner.ListSnapshots(e.ctx(), subscriptionSelector(testSub))
+			require.NoError(t, err)
+			assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways")
+			assert.Len(t, snaps, 1, "snapshots")
+			assert.Len(t, e.hetzner.byRole(t, roleNode), 1, "nodes")
+			assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "a builder outlived its snapshot")
+		})
+	}
+}
