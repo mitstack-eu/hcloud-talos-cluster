@@ -1,0 +1,190 @@
+# The cluster's own credentials: a Job that spends the enrolment token once
+# for the report token and the cluster repository's token, and a CronJob that
+# renews the repository tokens, which GitHub expires within an hour. Their
+# identity may write only the two Secrets they fill, and each app slice's
+# Role lets it patch that slice's repository Secret.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mitstack-enrolment
+  namespace: {{ .Namespace }}
+stringData:
+  token: {{ printf "%q" .EnrolmentToken }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mitstack-repo-token
+  namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-repo-token
+  namespace: {{ .Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [mitstack-report-token]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-repo-token
+  namespace: {{ .Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-repo-token
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-repo-token
+    namespace: {{ .Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mitstack-repo-token
+  namespace: argocd
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [cluster-repository]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mitstack-repo-token
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mitstack-repo-token
+subjects:
+  - kind: ServiceAccount
+    name: mitstack-repo-token
+    namespace: {{ .Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mitstack-enrolment
+  namespace: {{ .Namespace }}
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      serviceAccountName: mitstack-repo-token
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: enrol
+          image: {{ .Image }}
+          command:
+            - bash
+            - -c
+            - |
+{{ indent 14 .Script }}
+            - cluster-tokens
+            - enrol
+          env:
+            - name: PLATFORM_URL
+              value: {{ printf "%q" .PlatformURL }}
+            - name: SUBSCRIPTION_ID
+              value: {{ printf "%q" .SubscriptionID }}
+            - name: REPO_URL
+              value: {{ printf "%q" .RepoURL }}
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: token
+              mountPath: /var/run/mitstack
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: token
+          secret:
+            secretName: mitstack-enrolment
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mitstack-repository-token
+  namespace: {{ .Namespace }}
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: mitstack-repo-token
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: renew
+              image: {{ .Image }}
+              command:
+                - bash
+                - -c
+                - |
+{{ indent 18 .Script }}
+                - cluster-tokens
+                - renew
+              env:
+                - name: PLATFORM_URL
+                  value: {{ printf "%q" .PlatformURL }}
+                - name: SUBSCRIPTION_ID
+                  value: {{ printf "%q" .SubscriptionID }}
+                - name: REPO_URL
+                  value: {{ printf "%q" .RepoURL }}
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: token
+                  mountPath: /var/run/mitstack
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: token
+              secret:
+                secretName: mitstack-report-token
+                defaultMode: 0440
+            - name: tmp
+              emptyDir: {}

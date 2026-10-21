@@ -1,0 +1,80 @@
+# Block CI: the repository's one workflow.
+#
+# The block job makes one call to the operator kit's reusable publish-block
+# workflow. That workflow runs conformance (go vet, go test and blockverify
+# --standalone) on every event, and publishes the image to ECR together with
+# its provenance record only on a push to main. The uses: ref pins a released
+# kit tag, and kit-ref must equal it and the kit version go.mod requires. The
+# kit decodes runs-on itself, so it is passed as a JSON string.
+#
+# The secrets job runs gitleaks over every commit HEAD reaches, on every
+# event, because the kit's workflow scans for no secrets. The scripts job
+# runs shellcheck over the scripts the block embeds.
+name: Block CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  block:
+    uses: mitstack-eu/operator-kit/.github/workflows/publish-block.yml@v2.8.0
+    with:
+      block-id: hcloud-talos-cluster
+      ecr-repository: mitstack-hcloud-talos-cluster
+      kit-ref: v2.8.0
+      go-version: "1.26.10"
+      runs-on: ${{ vars.CI_RUNS_ON || '["ubicloud-standard-2"]' }}
+
+  secrets:
+    permissions:
+      contents: read
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["ubicloud-standard-2"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # The history is small, so scanning all of it on every event stays cheap.
+      - name: Cache the gitleaks binary
+        id: gitleaks-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: gitleaks
+          key: gitleaks-8.21.2-${{ runner.os }}
+
+      - name: Install gitleaks
+        if: steps.gitleaks-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+
+      - name: Verify the gitleaks binary
+        run: |
+          set -euo pipefail
+          echo "50b742abd7daad8bbddb6301f3017efb680632d9a5b3b4d8f137b3aac250e359  gitleaks" | sha256sum -c -
+          chmod +x gitleaks
+          ./gitleaks version
+
+      - name: Run gitleaks
+        run: ./gitleaks git --no-banner --redact --log-opts=HEAD .
+
+  scripts:
+    permissions:
+      contents: read
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["ubicloud-standard-2"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+

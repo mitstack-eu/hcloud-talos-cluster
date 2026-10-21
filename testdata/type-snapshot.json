@@ -1,0 +1,485 @@
+{
+  "version": 1,
+  "types": [
+    {
+      "id": "github.gitops-commit",
+      "capability": "github",
+      "kind": "gitops-revision",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": false
+      },
+      "category": "source-and-work",
+      "outputs": [
+        {
+          "name": "sourceBranch",
+          "secret": false,
+          "required": false
+        },
+        {
+          "name": "sourceSha",
+          "secret": false,
+          "required": true
+        }
+      ],
+      "observe": "the git commits API returns the commit, and the branch ref points at it or at a descendant",
+      "absence": "the git refs API answers 404 for the branch that carried the commit",
+      "timeBudgets": {
+        "delete": "1m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the GitHub API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the GitHub App installation lacks the permission the call needs"
+        },
+        {
+          "class": "transient",
+          "cause": "the branch ref moved while the commit was pushed"
+        },
+        {
+          "class": "permanent",
+          "cause": "the branch is protected against direct pushes"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "id": "github.gitops-repository",
+      "capability": "github",
+      "kind": "gitops-repository",
+      "scope": "per-app",
+      "stateful": true,
+      "pricing": {
+        "priced": false
+      },
+      "category": "source-and-work",
+      "outputs": [
+        {
+          "name": "repo",
+          "secret": false,
+          "required": true
+        }
+      ],
+      "observe": "the repos API returns the repository with its visibility and settings",
+      "absence": "the repos API answers 404 for the repository, or returns it archived when archive_on_destroy is set",
+      "timeBudgets": {
+        "delete": "1m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the GitHub API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the GitHub App installation lacks the permission the call needs"
+        },
+        {
+          "class": "permanent",
+          "cause": "the repository name is taken in the organisation"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "id": "hetzner.firewall",
+      "capability": "hetzner",
+      "kind": "firewall",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": false
+      },
+      "category": "network",
+      "outputs": [],
+      "observe": "GET /firewalls/{id} returns the firewall with its rules and the resources it applies to",
+      "absence": "GET /firewalls/{id} answers 404",
+      "timeBudgets": {
+        "delete": "5m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "transient",
+          "cause": "delete is refused while the firewall is still applied to a resource"
+        },
+        {
+          "class": "permanent",
+          "cause": "a firewall of the name exists in the project"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "id": "hetzner.kubernetes-cluster",
+      "capability": "hetzner",
+      "kind": "kubernetes-cluster",
+      "scope": "org-wide",
+      "stateful": false,
+      "pricing": {
+        "priced": true,
+        "key": "HetznerCloud"
+      },
+      "category": "compute",
+      "hosts": "kubernetes",
+      "outputs": [
+        {
+          "name": "apiEndpoint",
+          "secret": false,
+          "required": false
+        },
+        {
+          "name": "caCertificate",
+          "secret": false,
+          "required": false
+        },
+        {
+          "name": "clusterCredential",
+          "secret": true,
+          "required": false
+        },
+        {
+          "name": "issuerUrl",
+          "secret": false,
+          "required": false
+        },
+        {
+          "name": "privateEndpoint",
+          "secret": false,
+          "required": false
+        },
+        {
+          "name": "publicIpByLocation",
+          "secret": false,
+          "required": false,
+          "meaning": "The public IPv4 address of the cluster's public load balancer in each location it runs in, each serving the cluster's apps on ports 80 and 443.",
+          "shape": "JSON object mapping each location name, fsn1, nbg1 or hel1, to an IPv4 address",
+          "example": "{\"fsn1\":\"203.0.113.10\",\"nbg1\":\"203.0.113.20\",\"hel1\":\"203.0.113.30\"}"
+        },
+        {
+          "name": "clusterRepoUrl",
+          "secret": false,
+          "required": false,
+          "meaning": "The web address of the private repository Argo CD syncs the app's cluster from.",
+          "shape": "https URL",
+          "example": "https://github.com/acme/orbitdemo-cluster"
+        },
+        {
+          "name": "subscriptionId",
+          "secret": false,
+          "required": false,
+          "meaning": "The id of the subscription that created the cluster.",
+          "shape": "platform subscription id",
+          "example": "sub_3f9c2b1e8d7a6c5b"
+        },
+        {
+          "name": "issuerBucket",
+          "secret": false,
+          "required": false,
+          "meaning": "The name of the bucket that hosts the cluster's service-account issuer.",
+          "shape": "S3 bucket name, mitstack-oidc- and 26 lowercase base32 characters",
+          "example": "mitstack-oidc-abcdefghabcdefghabcdefghab"
+        },
+        {
+          "name": "enrolmentTokenSha256",
+          "secret": false,
+          "required": false,
+          "meaning": "The SHA-256 digest of the token the cluster's node presents to enrol with the platform; the token itself is never published.",
+          "shape": "52 lowercase base32 characters",
+          "example": "abcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcd"
+        },
+        {
+          "name": "openbaoSealKey",
+          "secret": false,
+          "required": false,
+          "meaning": "The OpenBao seal key of a cluster that hosts the platform, as an armored PGP message to the key openbaoSealKeyRecipient names; the key itself is never published.",
+          "shape": "ASCII-armored OpenPGP message",
+          "example": "-----BEGIN PGP MESSAGE-----"
+        },
+        {
+          "name": "sealedSecretsKey",
+          "secret": false,
+          "required": false,
+          "meaning": "The Sealed Secrets private key of a cluster that hosts the platform, as an armored PGP message to the key openbaoSealKeyRecipient names; the key itself is never published.",
+          "shape": "ASCII-armored OpenPGP message",
+          "example": "-----BEGIN PGP MESSAGE-----"
+        },
+        {
+          "name": "openbaoInit",
+          "secret": false,
+          "required": false,
+          "meaning": "The root token and recovery key from OpenBao's first init on a cluster that hosts the platform, each as an armored PGP message to the key openbaoSealKeyRecipient names.",
+          "shape": "ASCII-armored OpenPGP messages, one per secret",
+          "example": "-----BEGIN PGP MESSAGE-----"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "hostsPlatform",
+          "label": "Hosts the mitstack platform",
+          "required": false,
+          "secret": false,
+          "description": "Set to true only for mitstack's own cluster, which then boots OpenBao, External Secrets and Traefik without the platform and takes Argo CD's token from a GitHub App. It takes effect only at install."
+        },
+        {
+          "name": "openbaoSealKeyRecipient",
+          "label": "OpenBao seal key recipient",
+          "required": false,
+          "secret": false,
+          "description": "With hostsPlatform, the ASCII-armored OpenPGP public key, as gpg --armor --export prints it, that the block encrypts the OpenBao seal key to."
+        },
+        {
+          "name": "githubAppId",
+          "label": "GitHub App ID",
+          "required": false,
+          "secret": false,
+          "description": "With hostsPlatform, the App ID of the GitHub App whose key in OpenBao mints Argo CD's repository token."
+        },
+        {
+          "name": "githubAppInstallationId",
+          "label": "GitHub App installation ID",
+          "required": false,
+          "secret": false,
+          "description": "With hostsPlatform, the id of that App's installation on the organisation."
+        }
+      ],
+      "observe": "the Kubernetes API at apiEndpoint answers /readyz with ok to the cluster credential, and every node reports Ready",
+      "absence": "GET /servers/{id}, /load_balancers/{id}, /firewalls/{id}, /networks/{id} and /images/{id} answer 404 for every server, load balancer, firewall, network and snapshot the cluster's subscription created",
+      "timeBudgets": {
+        "delete": "10m",
+        "ensure": "20m",
+        "observe": "1m"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "transient",
+          "cause": "the location has no capacity for the server type"
+        },
+        {
+          "class": "transient",
+          "cause": "Kubernetes has not yet reported every node Ready"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's server limit is reached"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "id": "hetzner.load-balancer",
+      "capability": "hetzner",
+      "kind": "load-balancer",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": true,
+        "key": "HetznerCloud"
+      },
+      "category": "network",
+      "outputs": [
+        {
+          "name": "publicIp",
+          "secret": false,
+          "required": true
+        }
+      ],
+      "observe": "GET /load_balancers/{id} returns the load balancer with its addresses, services and targets",
+      "absence": "GET /load_balancers/{id} answers 404",
+      "timeBudgets": {
+        "delete": "2m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "permanent",
+          "cause": "a load balancer of the name exists in the project"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's load balancer limit is reached"
+        },
+        {
+          "class": "permanent",
+          "cause": "the requested private address is taken in the network"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "id": "hetzner.network",
+      "capability": "hetzner",
+      "kind": "network",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": false
+      },
+      "category": "network",
+      "outputs": [],
+      "observe": "GET /networks/{id} returns the network with its IP range and subnets",
+      "absence": "GET /networks/{id} answers 404",
+      "timeBudgets": {
+        "delete": "5m",
+        "ensure": "2m",
+        "observe": "30s"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "transient",
+          "cause": "delete is refused while a server or load balancer is still attached to the network"
+        },
+        {
+          "class": "permanent",
+          "cause": "a network of the name exists in the project"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "id": "hetzner.server",
+      "capability": "hetzner",
+      "kind": "host",
+      "scope": "per-app",
+      "stateful": false,
+      "pricing": {
+        "priced": true,
+        "key": "HetznerCloud"
+      },
+      "category": "compute",
+      "languages": [
+        "any-container"
+      ],
+      "outputs": [
+        {
+          "name": "cloud.region",
+          "secret": false,
+          "required": false
+        },
+        {
+          "name": "execKind",
+          "secret": false,
+          "required": true
+        },
+        {
+          "name": "execTarget",
+          "secret": false,
+          "required": true
+        },
+        {
+          "name": "host.type",
+          "secret": false,
+          "required": false
+        },
+        {
+          "name": "hostId",
+          "secret": false,
+          "required": true
+        }
+      ],
+      "inputs": [
+        {
+          "name": "location",
+          "label": "Hetzner location",
+          "required": false,
+          "secret": false,
+          "default": "nbg1",
+          "allowedValues": [
+            "fsn1",
+            "nbg1",
+            "hel1"
+          ],
+          "description": "The Hetzner location the host runs in, fsn1, nbg1 or hel1. These are Hetzner's locations in the EU, so the app's data stays there, and they share one network zone, so servers in different locations can sync data over a private network. The server, its primary IP and its volume all live in this one location."
+        },
+        {
+          "name": "serverType",
+          "label": "Server type",
+          "required": true,
+          "secret": false,
+          "allowedValues": [
+            "cx23",
+            "cx33",
+            "cx43",
+            "cx53",
+            "cpx52",
+            "cpx62"
+          ],
+          "description": "The Hetzner server type. It has no default, because blocks that create a server want different sizes, and each block refuses a type it does not run on."
+        }
+      ],
+      "observe": "GET /servers/{id} returns the server with status running",
+      "absence": "GET /servers/{id} answers 404",
+      "timeBudgets": {
+        "delete": "5m",
+        "ensure": "10m",
+        "observe": "1m"
+      },
+      "failures": [
+        {
+          "class": "transient",
+          "cause": "the Hetzner Cloud API rate-limited the call or answered a server error"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's Hetzner Cloud API token is invalid or lacks write access"
+        },
+        {
+          "class": "transient",
+          "cause": "the location has no capacity for the server type"
+        },
+        {
+          "class": "permanent",
+          "cause": "the project's server limit is reached"
+        },
+        {
+          "class": "permanent",
+          "cause": "the image names no image available in the location"
+        }
+      ],
+      "version": 1
+    }
+  ]
+}

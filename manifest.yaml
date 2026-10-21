@@ -1,0 +1,55 @@
+# hcloud-talos-cluster runs a one-node Talos Kubernetes cluster on Hetzner
+# Cloud for one app, from talos-cluster-kit. Subscribe creates a private
+# network whose default route goes to a gateway, a firewall with no rule, a
+# private load balancer for the Kubernetes API and a public one for ports 80
+# and 443 that both find the node by label, and a private cluster repository
+# on GitHub. The gateway, the cluster's only server with a public address,
+# forwards and records the node's traffic and serves its image mirror. A
+# short-lived builder builds the cluster's own disk image with the machine
+# configuration embedded, writes it to its disk and powers off, and that disk
+# becomes the snapshot the node boots from with no user data.
+#
+# Every Hetzner resource carries the subscription id as a label and the
+# repository carries it as a topic. Upgrade converges what is missing and
+# never replaces a server. Unsubscribe deletes every server, load balancer,
+# snapshot, firewall and network, and the repository, and finishes once the
+# observers read every resource absent.
+apiVersion: mitstack/v1beta
+type: capability
+metadata:
+  id: hcloud-talos-cluster
+  name: Hetzner Talos cluster
+  owner: mitstack
+spec:
+  version: 0.1.0
+  description: >
+    Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
+    or hel1, booted from its own image with no user data, with Argo CD
+    syncing the cluster from a private GitHub repository the block creates
+    for the app.
+  lifecycle:
+    endpoint: https://api.mitstack.dev/operators/hcloud-talos-cluster/hook
+    operations: [subscribe, unsubscribe, upgrade, validate]
+    contract: kit/v1
+    # The image build, its snapshot and the node's first boot take up to 45m.
+    settleBudget: 60m
+    verbConnections:
+      validate: [hetzner, github]
+      unsubscribe: [hetzner, github]
+  resources:
+    - hetzner.network
+    - hetzner.firewall
+    - name: api-load-balancer
+      type: hetzner.load-balancer
+    - name: ingress-load-balancer
+      type: hetzner.load-balancer
+    - name: github.repository
+      type: github.gitops-repository
+    - github.gitops-commit
+    - name: gateway
+      type: hetzner.server
+    - name: node
+      type: hetzner.server
+    - hetzner.kubernetes-cluster
+  provides:
+    - hetzner.kubernetes-cluster
