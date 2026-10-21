@@ -28,7 +28,6 @@ func (r *blockResource) clock() time.Time {
 	return r.now()
 }
 
-// The names of the resources the manifest declares.
 const (
 	resNetwork         = "hetzner.network"
 	resFirewall        = "hetzner.firewall"
@@ -139,7 +138,6 @@ func logExport() (components.LogExport, error) {
 	return components.LogExport{Endpoint: endpoint, CA: []byte(ca)}, nil
 }
 
-// ensureRequest is what Ensure reads off a request before it makes any call.
 type ensureRequest struct {
 	token, subID string
 	params       clusterParams
@@ -170,7 +168,6 @@ func readEnsureRequest(d contract.Desired) (ensureRequest, error) {
 	return req, err
 }
 
-// convergence is what Ensure has read and checked before it changes anything.
 type convergence struct {
 	api   hetznerAPI
 	state clusterState
@@ -181,10 +178,8 @@ type convergence struct {
 // ensureSteps bounds how often one Ensure reads the cluster again after a step that made something new.
 const ensureSteps = 3
 
-// Ensure takes the cluster as far on as it can: it creates whichever of the network, firewall, repository and load
-// balancers is missing, then moves the image pipeline from the gateway and builder to the snapshot and the node,
-// and returns while the builder is still building. It refuses before any change a cluster it cannot act on
-// unambiguously, or a repository without the subscription's mark.
+// Ensure takes the cluster as far on as it can and returns while the builder is still building, refusing before any
+// change a cluster it cannot act on unambiguously, or a repository without the subscription's mark.
 func (r *blockResource) Ensure(ctx context.Context, d contract.Desired) error {
 	req, err := readEnsureRequest(d)
 	if err != nil {
@@ -204,7 +199,6 @@ func (r *blockResource) Ensure(ctx context.Context, d contract.Desired) error {
 	return nil
 }
 
-// readConvergence lists the cluster and reads its repository, refusing what Ensure must not act on.
 func readConvergence(ctx context.Context, api hetznerAPI, req ensureRequest) (convergence, error) {
 	st, err := listCluster(ctx, api, req.subID)
 	if err != nil {
@@ -285,16 +279,14 @@ func privateAddress(ctx context.Context, c convergence, lb hcLoadBalancer, netwo
 	return "", nil
 }
 
-// clusterSite is the network, firewall and API address every server of the cluster is made with.
 type clusterSite struct {
 	network    hcNetwork
 	firewall   hcFirewall
 	apiAddress string
 }
 
-// ensureNode moves the image pipeline one step: the gateway and builder come first, the builder's powered-off disk
-// becomes the snapshot, and the node boots from it. Only a cluster with neither node nor gateway left is built
-// anew, since the cluster's keys live only in its node, its snapshot and a builder.
+// ensureNode builds anew only a cluster with neither node nor gateway left, since the cluster's keys live only in
+// its node, its snapshot and a builder.
 func (r *blockResource) ensureNode(ctx context.Context, c convergence, site clusterSite) (bool, error) {
 	_, hasGateway := c.state.server(roleGateway)
 	_, hasNode := c.state.server(roleNode)

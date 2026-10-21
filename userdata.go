@@ -35,7 +35,6 @@ const (
 	subnetPrefix = "10.0.0."
 )
 
-// cloudFile is one entry of cloud-init's write_files.
 type cloudFile struct {
 	Path        string `yaml:"path"`
 	Permissions string `yaml:"permissions"`
@@ -62,8 +61,7 @@ func (c cloudConfig) render() (string, error) {
 	return cloudConfigHeader + string(out), nil
 }
 
-// builderUserData builds the image on the builder, writes it over the builder's own disk and powers it off.
-// It holds every key of the cluster, which is why the builder is deleted once its disk is a snapshot.
+// builderUserData holds every key of the cluster, which is why the builder is deleted once its disk is a snapshot.
 func builderUserData(machineConfig []byte) (string, error) {
 	return cloudConfig{
 		WriteFiles: []cloudFile{

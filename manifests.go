@@ -39,13 +39,11 @@ const (
 	manifestDir        = "manifests/"
 )
 
-// manifestInputs are what the block's own manifests in the embedded configuration name.
 type manifestInputs struct {
 	subID, repoURL, enrolmentToken string
 }
 
-// clusterComponents is the kit's component set with the node report, the cluster's credentials and its Application
-// added inline, so the configuration carries them and the gateway mirrors their image.
+// clusterComponents adds the block's manifests inline, so the configuration carries them and the gateway mirrors their image.
 func clusterComponents(in manifestInputs) (components.Set, error) {
 	set := components.Default()
 	reportManifests, err := report.Manifests(report.Inputs{URL: platformURL + clusterReportsPath, SubscriptionID: in.subID, ToolsImage: toolsImage()})
@@ -85,7 +83,6 @@ func execute(t *template.Template, data map[string]string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// indent prefixes every non-empty line of s with n spaces, for a script inside a YAML block scalar.
 func indent(n int, s string) string {
 	pad := strings.Repeat(" ", n)
 	lines := strings.Split(strings.TrimSuffix(s, "\n"), "\n")
