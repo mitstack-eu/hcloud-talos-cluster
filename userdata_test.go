@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -240,4 +241,15 @@ func TestBuilder_UserDataIsOneCloudConfigDocumentWithinHetznersLimit(t *testing.
 	assert.LessOrEqual(t, len(data), hetznerUserDataLimit, "the builder's user data is %d bytes; Hetzner accepts %d", len(data), hetznerUserDataLimit)
 	assert.True(t, strings.HasPrefix(data, "#cloud-config\n"), "the builder's user data opens with the cloud-config header")
 	assert.Len(t, docs, 1, "YAML documents in the builder's user data")
+}
+
+func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
+	incompressible := make([]byte, 2*hetznerUserDataLimit)
+	_, err := rand.Read(incompressible)
+	require.NoError(t, err)
+
+	_, err = builderUserData(incompressible)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "over Hetzner's 32768")
 }
