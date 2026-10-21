@@ -123,9 +123,15 @@ func (f *fakeHetzner) ListServers(_ context.Context, sel string) ([]hcServer, er
 	return selected(f.servers, func(s *hcServer) map[string]string { return s.Labels }, sel), nil
 }
 
+// hetznerUserDataLimit is the most user data Hetzner's create-server reference accepts: "limited to 32KiB".
+const hetznerUserDataLimit = 32 * 1024
+
 func (f *fakeHetzner) CreateServer(_ context.Context, spec serverSpec) (hcServer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(spec.UserData) > hetznerUserDataLimit {
+		return hcServer{}, fmt.Errorf("creating server %s: invalid input in field 'user_data' (invalid_input)", spec.Name)
+	}
 	s := &hcServer{
 		ID: f.id(), Name: spec.Name, Location: spec.Location, ServerType: spec.ServerType, Status: "running",
 		Labels: maps.Clone(spec.Labels), PrivateIPs: map[int64]string{}, FirewallIDs: slices.Clone(spec.FirewallIDs),
