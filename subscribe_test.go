@@ -71,8 +71,9 @@ func TestSubscribe_TheNodeCarriesNoUserDataAndOnlyTheGatewayHoldsAPublicAddress(
 	for _, spec := range e.hetzner.serverSpecs {
 		assert.Equal(t, []int64{firewalls[0].ID}, spec.FirewallIDs, "server %s's firewalls", spec.Name)
 	}
-	for _, lb := range e.hetzner.lbSpecs {
-		wantPublic := lb.Labels[keyRole] == string(roleIngress)
+	for _, r := range []role{roleAPI, roleIngress} {
+		lb := e.hetzner.loadBalancer(t, r)
+		wantPublic := r == roleIngress
 		assert.Equal(t, wantPublic, lb.PublicInterface, "load balancer %s's public interface = %v; want %v", lb.Name, lb.PublicInterface, wantPublic)
 	}
 }
@@ -120,11 +121,47 @@ func TestSubscribe_LoadBalancersFindTheNodeByLabel(t *testing.T) {
 		}},
 	}
 	require.Len(t, e.hetzner.lbSpecs, 2)
-	for _, lb := range e.hetzner.lbSpecs {
-		r := lb.Labels[keyRole]
-		assert.Equal(t, want[r].Services, lb.Services, "the %s load balancer's services", r)
-		assert.Equal(t, roleSelector(testSub, roleNode), lb.TargetSelector, "the %s load balancer's targets", r)
-		assert.NotZero(t, lb.NetworkID, "the %s load balancer's network", r)
+	for _, r := range []role{roleAPI, roleIngress} {
+		lb := e.hetzner.loadBalancer(t, r)
+		assert.Equal(t, want[string(r)].Services, lb.Services, "the %s load balancer's services", r)
+		assert.Equal(t, []string{roleSelector(testSub, roleNode)}, lb.TargetSelectors, "the %s load balancer's targets", r)
+	}
+}
+
+func TestSubscribe_TheLoadBalancersJoinTheNetworkAtAddressesApartFromTheGateways(t *testing.T) {
+	e := newEnv(t)
+
+	require.NoError(t, e.ensure())
+
+	networks, err := e.hetzner.ListNetworks(e.ctx(), subscriptionSelector(testSub))
+	require.NoError(t, err)
+	require.Len(t, networks, 1)
+	for r, want := range map[role]string{roleAPI: "10.0.0.3", roleIngress: "10.0.0.4"} {
+		assert.Equal(t, map[int64]string{networks[0].ID: want}, e.hetzner.loadBalancer(t, r).PrivateIPs, "the %s load balancer's address", r)
+	}
+	assert.Equal(t, gatewayAddress, e.hetzner.byRole(t, roleGateway)[0].PrivateIPs[networks[0].ID], "the gateway's address")
+}
+
+func TestSubscribe_ALoadBalancerStepThatFailedIsTakenUpByTheNextEnsureWithoutADuplicate(t *testing.T) {
+	for _, step := range []string{"attach", "disable-public", "add-service", "add-target"} {
+		t.Run(step, func(t *testing.T) {
+			e := newEnv(t)
+			e.hetzner.failLBStep[step] = errors.New("hetzner answered 503 to the " + step)
+			require.Error(t, e.ensure(), "the ensure whose %s fails", step)
+			assert.Empty(t, e.hetzner.byRole(t, roleGateway), "a gateway built before the API load balancer was finished")
+
+			require.NoError(t, e.ensure())
+
+			for _, r := range []role{roleAPI, roleIngress} {
+				lb := e.hetzner.loadBalancer(t, r)
+				assert.Len(t, lb.PrivateIPs, 1, "the %s load balancer's networks", r)
+				assert.Equal(t, r == roleIngress, lb.PublicInterface, "the %s load balancer's public interface", r)
+				assert.Len(t, lb.Services, map[role]int{roleAPI: 1, roleIngress: 2}[r], "the %s load balancer's services", r)
+				assert.Len(t, lb.TargetSelectors, 1, "the %s load balancer's targets", r)
+			}
+			assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the retry")
+			assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the retry")
+		})
 	}
 }
 

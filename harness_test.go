@@ -61,6 +61,8 @@ type fakeHetzner struct {
 	// lbAddressAfterReads leaves the address of a load balancer created on a network unassigned for this many reads.
 	lbAddressAfterReads int
 	pendingLBAddress    map[int64]pendingAddress
+	// failLBStep, when set, fails the next load balancer call of that name with it.
+	failLBStep map[string]error
 }
 
 // pendingAddress is a load balancer's address on a network, which Hetzner assigns once reads more reads have passed.
@@ -75,7 +77,7 @@ func newFakeHetzner(now func() time.Time) *fakeHetzner {
 		nextID: 1000, nextAddress: 5, now: now,
 		servers: map[int64]*hcServer{}, userData: map[int64]string{}, networks: map[int64]*hcNetwork{},
 		firewalls: map[int64]*hcFirewall{}, loadBalancers: map[int64]*hcLoadBalancer{}, snapshots: map[int64]*hcSnapshot{},
-		pendingLBAddress: map[int64]pendingAddress{},
+		pendingLBAddress: map[int64]pendingAddress{}, failLBStep: map[string]error{},
 	}
 }
 
@@ -237,14 +239,20 @@ func (f *fakeHetzner) CreateLoadBalancer(_ context.Context, spec loadBalancerSpe
 	defer f.mu.Unlock()
 	lb := &hcLoadBalancer{
 		ID: f.id(), Name: spec.Name, Location: spec.Location, Labels: maps.Clone(spec.Labels), PublicInterface: spec.PublicInterface,
-		PrivateIPs: map[int64]string{spec.NetworkID: f.address()}, Services: spec.Services, TargetSelectors: []string{spec.TargetSelector},
+		PrivateIPs: map[int64]string{}, Services: slices.Clone(spec.Services),
+	}
+	if spec.NetworkID != 0 {
+		lb.PrivateIPs[spec.NetworkID] = f.address()
+	}
+	if spec.TargetSelector != "" {
+		lb.TargetSelectors = []string{spec.TargetSelector}
 	}
 	if spec.PublicInterface {
 		lb.PublicIPv4 = fmt.Sprintf("198.51.100.%d", lb.ID%250)
 	}
 	f.loadBalancers[lb.ID] = lb
 	f.lbSpecs = append(f.lbSpecs, spec)
-	if f.lbAddressAfterReads > 0 {
+	if f.lbAddressAfterReads > 0 && spec.NetworkID != 0 {
 		f.pendingLBAddress[lb.ID] = pendingAddress{networkID: spec.NetworkID, ip: lb.PrivateIPs[spec.NetworkID], reads: f.lbAddressAfterReads}
 		lb.PrivateIPs = map[int64]string{}
 	}
@@ -254,6 +262,96 @@ func (f *fakeHetzner) CreateLoadBalancer(_ context.Context, spec loadBalancerSpe
 		answer.PrivateIPs = map[int64]string{}
 	}
 	return answer, nil
+}
+
+// lbStep fails a load balancer call failLBStep names, once, and otherwise returns the load balancer it acts on.
+func (f *fakeHetzner) lbStep(step string, id int64) (*hcLoadBalancer, error) {
+	if err := f.failLBStep[step]; err != nil {
+		delete(f.failLBStep, step)
+		return nil, err
+	}
+	lb, ok := f.loadBalancers[id]
+	if !ok {
+		return nil, fmt.Errorf("not_found: load balancer %d", id)
+	}
+	return lb, nil
+}
+
+// attached reads a load balancer attached while Hetzner has not yet shown its address as attached all the same.
+func (f *fakeHetzner) attached(lb *hcLoadBalancer) bool {
+	_, pending := f.pendingLBAddress[lb.ID]
+	return len(lb.PrivateIPs) > 0 || pending
+}
+
+// AttachLoadBalancerToNetwork assigns the requested address once the attach action finishes, and refuses a second attach as Hetzner does.
+func (f *fakeHetzner) AttachLoadBalancerToNetwork(_ context.Context, id, networkID int64, ip string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	lb, err := f.lbStep("attach", id)
+	if err != nil {
+		return err
+	}
+	if f.attached(lb) {
+		return fmt.Errorf("load_balancer_already_attached: load balancer %d", id)
+	}
+	lb.PrivateIPs[networkID] = ip
+	return nil
+}
+
+func (f *fakeHetzner) DisableLoadBalancerPublicInterface(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	lb, err := f.lbStep("disable-public", id)
+	if err != nil {
+		return err
+	}
+	if !f.attached(lb) {
+		return fmt.Errorf("load_balancer_not_attached_to_network: load balancer %d", id)
+	}
+	lb.PublicInterface = false
+	return nil
+}
+
+func (f *fakeHetzner) AddLoadBalancerService(_ context.Context, id int64, service lbService) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	lb, err := f.lbStep("add-service", id)
+	if err != nil {
+		return err
+	}
+	for _, s := range lb.Services {
+		if s.ListenPort == service.ListenPort {
+			return fmt.Errorf("source_port_already_used: load balancer %d listens on %d", id, s.ListenPort)
+		}
+	}
+	lb.Services = append(lb.Services, service)
+	return nil
+}
+
+func (f *fakeHetzner) AddLoadBalancerTarget(_ context.Context, id int64, labelSelector string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	lb, err := f.lbStep("add-target", id)
+	if err != nil {
+		return err
+	}
+	if !f.attached(lb) {
+		return fmt.Errorf("load_balancer_not_attached_to_network: load balancer %d", id)
+	}
+	if slices.Contains(lb.TargetSelectors, labelSelector) {
+		return fmt.Errorf("target_already_defined: load balancer %d", id)
+	}
+	lb.TargetSelectors = append(lb.TargetSelectors, labelSelector)
+	return nil
+}
+
+// loadBalancer returns the one load balancer carrying role r.
+func (f *fakeHetzner) loadBalancer(t *testing.T, r role) hcLoadBalancer {
+	t.Helper()
+	lbs, err := f.ListLoadBalancers(context.Background(), roleSelector(testSub, r))
+	require.NoError(t, err)
+	require.Len(t, lbs, 1, "%s load balancers", r)
+	return lbs[0]
 }
 
 func (f *fakeHetzner) DeleteLoadBalancer(_ context.Context, id int64) error {
