@@ -33,8 +33,8 @@ public address.
 | Network `10.0.0.0/16` | Holds every server and load balancer, and routes `0.0.0.0/0` to the gateway at `10.0.0.2` | `ensureNetwork` in `resource.go` |
 | Firewall | Holds no rule, and is applied to every server, so nothing reaches a server from the internet | `ensureFirewall` in `resource.go` |
 | Gateway | The only server with a public address. It runs the kit's cloud-config, which forwards and records the node's DNS, NTP and HTTPS and serves its image mirror | `createGateway` in `install.go` |
-| API load balancer | Carries the Kubernetes API on port 6443 on the private network, with no public interface | `apiLoadBalancer` in `resource.go` |
-| Ingress load balancer | Serves ports 80 and 443 on its public address to the NodePorts 30080 and 30081, with PROXY protocol | `ingressLoadBalancer` in `resource.go` |
+| API load balancer | Carries the Kubernetes API on port 6443 at `10.0.0.3` on the private network, with no public interface | `apiLoadBalancer` and `ensureLoadBalancer` in `resource.go` |
+| Ingress load balancer | Serves ports 80 and 443 on its public address to the NodePorts 30080 and 30081, with PROXY protocol, and sits at `10.0.0.4` on the network | `ingressLoadBalancer` and `ensureLoadBalancer` in `resource.go` |
 | Builder | A short-lived server that builds the image with imager, writes it over its own disk and powers off | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
 | Snapshot | The builder's disk, which every node boots from | `finishBuild` in `resource.go` |
 | Node | The control-plane node, booted from the snapshot | `createNode` in `resource.go` |
@@ -47,12 +47,17 @@ either. Every Hetzner resource carries the labels `mitstack.dev/block` and
 
 ## How a subscribe proceeds
 
-Each lifecycle call takes the cluster as far as it can and returns, and the
-platform calls again until the cluster reads present. A run moves through
-these steps:
+Each lifecycle call takes the cluster as far as it can and returns. While a
+subscription settles, the platform sends only validate, which changes
+nothing. A subscribe therefore carries the cluster through step 1, and step 2
+waits for a later subscribe or upgrade. A run moves through these steps:
 
 1. The first call creates the network, the firewall, the repository and both
-   load balancers. It then mints the cluster's keys, renders the machine
+   load balancers. Each load balancer is created bare and attached to the
+   network at its fixed address, before its public interface is disabled or
+   its private target added, since Hetzner refuses either on a load balancer
+   with no network. Each of these steps returns once its Hetzner action has
+   finished. The call then mints the cluster's keys, renders the machine
    configuration with `nodeconfig.Render`, and creates the gateway and the
    builder.
 2. The builder pulls imager through the gateway, builds the image and powers
