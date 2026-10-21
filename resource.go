@@ -61,7 +61,10 @@ const (
 	routerAddress = "10.0.0.1"
 	// gatewayAddress is fixed, since the network's default route and every node's mirror name it.
 	gatewayAddress = "10.0.0.2"
-	defaultRoute   = "0.0.0.0/0"
+	// The load balancers join the network at fixed addresses before the gateway does, so neither takes the gateway's.
+	apiLoadBalancerAddress     = "10.0.0.3"
+	ingressLoadBalancerAddress = "10.0.0.4"
+	defaultRoute               = "0.0.0.0/0"
 
 	apiServerPort = 6443
 	httpPort      = 80
@@ -230,37 +233,15 @@ func (r *blockResource) converge(ctx context.Context, c convergence) (bool, erro
 	if err := ensureRepository(ctx, c); err != nil {
 		return false, err
 	}
-	privateLB, err := ensureLoadBalancer(ctx, c, apiLoadBalancer(c.req, network.ID))
+	apiAddress, err := ensureLoadBalancer(ctx, c, apiLoadBalancer(c.req, network.ID), apiLoadBalancerAddress)
 	if err != nil {
 		return false, err
 	}
-	if _, err := ensureLoadBalancer(ctx, c, ingressLoadBalancer(c.req, network.ID)); err != nil {
-		return false, err
-	}
-	apiAddress, err := privateAddress(ctx, c, privateLB, network.ID)
-	if err != nil || apiAddress == "" {
+	if _, err := ensureLoadBalancer(ctx, c, ingressLoadBalancer(c.req, network.ID), ingressLoadBalancerAddress); err != nil {
 		return false, err
 	}
 	site := clusterSite{network: network, firewall: firewall, apiAddress: apiAddress}
 	return r.ensureNode(ctx, c, site)
-}
-
-// privateAddress reads the load balancer back when its create answer named no address on the network, and is
-// empty while Hetzner has not assigned one, so a later call goes on from there.
-func privateAddress(ctx context.Context, c convergence, lb hcLoadBalancer, networkID int64) (string, error) {
-	if addr := lb.PrivateIPs[networkID]; addr != "" {
-		return addr, nil
-	}
-	lbs, err := c.api.ListLoadBalancers(ctx, roleSelector(c.req.subID, role(lb.Labels[keyRole])))
-	if err != nil {
-		return "", fmt.Errorf("reading the %s load balancer's address: %w", lb.Labels[keyRole], err)
-	}
-	for _, found := range lbs {
-		if found.ID == lb.ID {
-			return found.PrivateIPs[networkID], nil
-		}
-	}
-	return "", nil
 }
 
 type clusterSite struct {
@@ -418,15 +399,48 @@ func ingressLoadBalancer(req ensureRequest, networkID int64) loadBalancerSpec {
 	}
 }
 
-func ensureLoadBalancer(ctx context.Context, c convergence, spec loadBalancerSpec) (hcLoadBalancer, error) {
-	if lb, ok := c.state.loadBalancer(role(spec.Labels[keyRole])); ok {
-		return lb, nil
+// ensureLoadBalancer takes the load balancer through each step it still lacks, each finished by its own Hetzner action,
+// and returns its address on the network. It is created bare and attached before its public interface is disabled or a
+// private target added, since Hetzner refuses either on a load balancer not yet attached to a network. One created here
+// has its public interface on whatever the create answer reads.
+func ensureLoadBalancer(ctx context.Context, c convergence, want loadBalancerSpec, address string) (string, error) {
+	r := want.Labels[keyRole]
+	lb, ok := c.state.loadBalancer(role(r))
+	if !ok {
+		created, err := c.api.CreateLoadBalancer(ctx, loadBalancerSpec{
+			Name: want.Name, Type: want.Type, Location: want.Location, Labels: want.Labels, PublicInterface: true,
+		})
+		if err != nil {
+			return "", fmt.Errorf("creating the cluster's %s load balancer: %w", r, err)
+		}
+		lb = created
 	}
-	lb, err := c.api.CreateLoadBalancer(ctx, spec)
-	if err != nil {
-		return hcLoadBalancer{}, fmt.Errorf("creating the cluster's %s load balancer: %w", spec.Labels[keyRole], err)
+	attached := lb.PrivateIPs[want.NetworkID]
+	if attached == "" {
+		if err := c.api.AttachLoadBalancerToNetwork(ctx, lb.ID, want.NetworkID, address); err != nil {
+			return "", fmt.Errorf("attaching the cluster's %s load balancer: %w", r, err)
+		}
+		attached = address
 	}
-	return lb, nil
+	if !want.PublicInterface && (lb.PublicInterface || !ok) {
+		if err := c.api.DisableLoadBalancerPublicInterface(ctx, lb.ID); err != nil {
+			return "", err
+		}
+	}
+	for _, s := range want.Services {
+		if slices.ContainsFunc(lb.Services, func(have lbService) bool { return have.ListenPort == s.ListenPort }) {
+			continue
+		}
+		if err := c.api.AddLoadBalancerService(ctx, lb.ID, s); err != nil {
+			return "", err
+		}
+	}
+	if !slices.Contains(lb.TargetSelectors, want.TargetSelector) {
+		if err := c.api.AddLoadBalancerTarget(ctx, lb.ID, want.TargetSelector); err != nil {
+			return "", err
+		}
+	}
+	return attached, nil
 }
 
 // ensureRepository creates and marks the cluster repository only when none exists, since Ensure has already

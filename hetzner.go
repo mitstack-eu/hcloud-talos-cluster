@@ -29,6 +29,12 @@ type hetznerAPI interface {
 	DeleteFirewall(ctx context.Context, id int64) error
 	ListLoadBalancers(ctx context.Context, labelSelector string) ([]hcLoadBalancer, error)
 	CreateLoadBalancer(ctx context.Context, spec loadBalancerSpec) (hcLoadBalancer, error)
+	// AttachLoadBalancerToNetwork returns once Hetzner's attach action has given the load balancer ip on the network.
+	AttachLoadBalancerToNetwork(ctx context.Context, id, networkID int64, ip string) error
+	DisableLoadBalancerPublicInterface(ctx context.Context, id int64) error
+	AddLoadBalancerService(ctx context.Context, id int64, service lbService) error
+	// AddLoadBalancerTarget reaches every server labelSelector matches by its private address.
+	AddLoadBalancerTarget(ctx context.Context, id int64, labelSelector string) error
 	DeleteLoadBalancer(ctx context.Context, id int64) error
 	ListSnapshots(ctx context.Context, labelSelector string) ([]hcSnapshot, error)
 	// CreateSnapshot returns once Hetzner has finished imaging the server's disk.
@@ -115,7 +121,8 @@ type lbService struct {
 	ProxyProtocol               bool
 }
 
-// loadBalancerSpec creates a load balancer on NetworkID that reaches every server TargetSelector matches by its private address.
+// loadBalancerSpec creates a load balancer on NetworkID, when set, that reaches every server TargetSelector matches by
+// its private address.
 type loadBalancerSpec struct {
 	Name, Type, Location string
 	Labels               map[string]string
@@ -341,13 +348,17 @@ func (a *hcloudAPI) CreateLoadBalancer(ctx context.Context, spec loadBalancerSpe
 		LoadBalancerType: &hcloud.LoadBalancerType{Name: spec.Type},
 		Location:         &hcloud.Location{Name: spec.Location},
 		Labels:           spec.Labels,
-		Network:          &hcloud.Network{ID: spec.NetworkID},
 		PublicInterface:  hcloud.Ptr(spec.PublicInterface),
-		Targets: []hcloud.LoadBalancerCreateOptsTarget{{
+	}
+	if spec.NetworkID != 0 {
+		opts.Network = &hcloud.Network{ID: spec.NetworkID}
+	}
+	if spec.TargetSelector != "" {
+		opts.Targets = []hcloud.LoadBalancerCreateOptsTarget{{
 			Type:          hcloud.LoadBalancerTargetTypeLabelSelector,
 			LabelSelector: hcloud.LoadBalancerCreateOptsTargetLabelSelector{Selector: spec.TargetSelector},
 			UsePrivateIP:  hcloud.Ptr(true),
-		}},
+		}}
 	}
 	for _, s := range spec.Services {
 		opts.Services = append(opts.Services, hcloud.LoadBalancerCreateOptsService{
@@ -372,6 +383,53 @@ func (a *hcloudAPI) CreateLoadBalancer(ctx context.Context, spec loadBalancerSpe
 		return hcLoadBalancer{}, err
 	}
 	return loadBalancerFromHcloud(res.LoadBalancer), nil
+}
+
+func (a *hcloudAPI) AttachLoadBalancerToNetwork(ctx context.Context, id, networkID int64, ip string) error {
+	action, _, err := a.client.LoadBalancer.AttachToNetwork(ctx, &hcloud.LoadBalancer{ID: id},
+		hcloud.LoadBalancerAttachToNetworkOpts{Network: &hcloud.Network{ID: networkID}, IP: net.ParseIP(ip)})
+	if err != nil {
+		return fmt.Errorf("attaching load balancer %d to network %d at %s: %w", id, networkID, ip, err)
+	}
+	return a.wait(ctx, action, fmt.Sprintf("load balancer %d to attach to network %d", id, networkID))
+}
+
+func (a *hcloudAPI) DisableLoadBalancerPublicInterface(ctx context.Context, id int64) error {
+	action, _, err := a.client.LoadBalancer.DisablePublicInterface(ctx, &hcloud.LoadBalancer{ID: id})
+	if err != nil {
+		return fmt.Errorf("disabling the public interface of load balancer %d: %w", id, err)
+	}
+	return a.wait(ctx, action, fmt.Sprintf("load balancer %d's public interface to be disabled", id))
+}
+
+// AddLoadBalancerService checks the service's destination port on each target over TCP, as CreateLoadBalancer does.
+func (a *hcloudAPI) AddLoadBalancerService(ctx context.Context, id int64, s lbService) error {
+	action, _, err := a.client.LoadBalancer.AddService(ctx, &hcloud.LoadBalancer{ID: id}, hcloud.LoadBalancerAddServiceOpts{
+		Protocol:        hcloud.LoadBalancerServiceProtocolTCP,
+		ListenPort:      hcloud.Ptr(s.ListenPort),
+		DestinationPort: hcloud.Ptr(s.DestinationPort),
+		Proxyprotocol:   hcloud.Ptr(s.ProxyProtocol),
+		HealthCheck: &hcloud.LoadBalancerAddServiceOptsHealthCheck{
+			Protocol: hcloud.LoadBalancerServiceProtocolTCP,
+			Port:     hcloud.Ptr(s.DestinationPort),
+			Interval: hcloud.Ptr(healthCheckInterval),
+			Timeout:  hcloud.Ptr(healthCheckTimeout),
+			Retries:  hcloud.Ptr(healthCheckRetries),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("adding the service on port %d to load balancer %d: %w", s.ListenPort, id, err)
+	}
+	return a.wait(ctx, action, fmt.Sprintf("load balancer %d to serve port %d", id, s.ListenPort))
+}
+
+func (a *hcloudAPI) AddLoadBalancerTarget(ctx context.Context, id int64, labelSelector string) error {
+	action, _, err := a.client.LoadBalancer.AddLabelSelectorTarget(ctx, &hcloud.LoadBalancer{ID: id},
+		hcloud.LoadBalancerAddLabelSelectorTargetOpts{Selector: labelSelector, UsePrivateIP: hcloud.Ptr(true)})
+	if err != nil {
+		return fmt.Errorf("adding the target %s to load balancer %d: %w", labelSelector, id, err)
+	}
+	return a.wait(ctx, action, fmt.Sprintf("load balancer %d to target %s", id, labelSelector))
 }
 
 func (a *hcloudAPI) DeleteLoadBalancer(ctx context.Context, id int64) error {
