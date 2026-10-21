@@ -159,16 +159,20 @@ func platform(t *testing.T, enrolStatus int) (*httptest.Server, *[]string) {
 	return srv, &seen
 }
 
-func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string) scriptRun {
+func runClusterTokens(t *testing.T, srv *httptest.Server, verb, token string, extraEnv ...string) scriptRun {
 	t.Helper()
 	dir := t.TempDir()
 	ca := filepath.Join(dir, "ca.crt")
 	require.NoError(t, os.WriteFile(ca, certPEM(srv), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "token"), []byte(token), 0o600))
-	tools := testutil.NewTools(t, map[string]string{"kubectl": `[ "$1" = apply ] && cat > /dev/null || cat`})
+	tools := testutil.NewTools(t, map[string]string{"kubectl": `case $1 in
+  apply) cat > /dev/null ;;
+  get) [ "${SECRETS_PRESENT:-no}" = yes ] ;;
+  *) cat ;;
+esac`})
 	env := tools.Env("PLATFORM_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "REPO_URL=https://github.com/"+testOwner+"/shop-cluster",
 		"TOKEN_FILE="+filepath.Join(dir, "token"), "CURL_CA_BUNDLE="+ca, "KUBE_API="+srv.URL, "KUBE_ACCOUNT_DIR="+dir, "CALL_ATTEMPTS=1")
-	out, err := testutil.RunBash(t, clusterTokensScript, env, verb)
+	out, err := testutil.RunBash(t, clusterTokensScript, append(env, extraEnv...), verb)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
 
@@ -188,13 +192,16 @@ func TestClusterTokens_EnrolSpendsTheEnrolmentTokenAndWritesBothSecrets(t *testi
 	assert.Equal(t, []string{"mitstack-report-token in mitstack-node", "cluster-repository in argocd"}, created)
 }
 
-func TestClusterTokens_EnrolTreatsASpentTokenAsEnrolled(t *testing.T) {
+func TestClusterTokens_EnrolTreatsASpentTokenAsEnrolledOnlyWhenItsSecretsExist(t *testing.T) {
 	srv, _ := platform(t, http.StatusConflict)
 
-	run := runClusterTokens(t, srv, "enrol", "enrolment-token")
+	present := runClusterTokens(t, srv, "enrol", "enrolment-token", "SECRETS_PRESENT=yes")
+	missing := runClusterTokens(t, srv, "enrol", "enrolment-token", "SECRETS_PRESENT=no")
 
-	require.NoError(t, run.err, run.out)
-	assert.Contains(t, run.out, "enrolled already")
+	require.NoError(t, present.err, present.out)
+	assert.Contains(t, present.out, "enrolled already")
+	require.Error(t, missing.err, "a spent token with no Secrets must fail the Job")
+	assert.Contains(t, missing.out, "mitstack-report-token")
 }
 
 func TestClusterTokens_RenewPatchesEachAppSlicesRepositorySecret(t *testing.T) {

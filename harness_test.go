@@ -53,6 +53,12 @@ type fakeHetzner struct {
 	instantBuild bool
 	// failNext, when set, fails the next server list with it.
 	failNext error
+	// failDelete, when set, fails the next server delete with it.
+	failDelete error
+	// failPowerOn, when set, fails the next power-on with it.
+	failPowerOn error
+	// lateLBAddress leaves a new load balancer's private address out of the create answer, as Hetzner may.
+	lateLBAddress bool
 }
 
 func newFakeHetzner(now func() time.Time) *fakeHetzner {
@@ -137,6 +143,10 @@ func (f *fakeHetzner) AttachServerToNetwork(_ context.Context, serverID, network
 func (f *fakeHetzner) PowerOnServer(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.failPowerOn; err != nil {
+		f.failPowerOn = nil
+		return err
+	}
 	f.servers[id].Status = "running"
 	return nil
 }
@@ -144,6 +154,10 @@ func (f *fakeHetzner) PowerOnServer(_ context.Context, id int64) error {
 func (f *fakeHetzner) DeleteServer(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.failDelete; err != nil {
+		f.failDelete = nil
+		return err
+	}
 	delete(f.servers, id)
 	return nil
 }
@@ -208,7 +222,11 @@ func (f *fakeHetzner) CreateLoadBalancer(_ context.Context, spec loadBalancerSpe
 	}
 	f.loadBalancers[lb.ID] = lb
 	f.lbSpecs = append(f.lbSpecs, spec)
-	return *lb, nil
+	answer := *lb
+	if f.lateLBAddress {
+		answer.PrivateIPs = map[int64]string{}
+	}
+	return answer, nil
 }
 
 func (f *fakeHetzner) DeleteLoadBalancer(_ context.Context, id int64) error {

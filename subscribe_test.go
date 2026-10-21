@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -233,4 +234,39 @@ func TestSubscribe_ConvergesWithoutDuplicatingOnceTheClusterIsPresent(t *testing
 
 	assert.Equal(t, before, e.hetzner.count(), "Hetzner resources after a repeated ensure")
 	assert.Equal(t, contract.Present, e.observe().State)
+}
+
+func TestSubscribe_DeletesABuilderLeftBesideTheSnapshotWhoseDeleteFailed(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, e.ensure())
+	e.hetzner.powerOffBuilder(t)
+	e.hetzner.failDelete = errors.New("hetzner answered 503 to the builder's delete")
+	require.Error(t, e.ensure(), "the ensure whose builder delete fails")
+
+	require.NoError(t, e.ensure())
+
+	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "a powered-off builder, whose disk holds every cluster key, outlived its snapshot")
+	assert.Len(t, e.hetzner.byRole(t, roleNode), 1, "nodes")
+}
+
+func TestSubscribe_AnInstallThatFailsAfterTheGatewayExistsLeavesNothingTheNextEnsureRefuses(t *testing.T) {
+	e := newEnv(t)
+	e.hetzner.failPowerOn = errors.New("hetzner answered 503 to the gateway's power-on")
+	require.Error(t, e.ensure(), "the ensure whose gateway power-on fails")
+	assert.Empty(t, e.hetzner.byRole(t, roleGateway), "the gateway of a failed install")
+	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder of a failed install")
+
+	require.NoError(t, e.ensure())
+
+	assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the retry")
+	assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the retry")
+}
+
+func TestSubscribe_ReadsTheAPIAddressFromHetznerWhenTheCreateAnswerLacksIt(t *testing.T) {
+	e := newEnv(t)
+	e.hetzner.lateLBAddress = true
+
+	obs := e.subscribe()
+
+	assert.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
 }
