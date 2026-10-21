@@ -3,11 +3,110 @@
 This repository holds hcloud-talos-cluster, the mitstack block that builds a
 Talos Kubernetes cluster on Hetzner Cloud servers and provides the type
 `hetzner.kubernetes-cluster`. It is for the engineers who build and maintain
-the block. A block is a unit of infrastructure an app subscribes to, as
+the block. A block is a unit of infrastructure an app subscribes to, and its
+operator is the service that serves the block's lifecycle calls, as
 [the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md)
 defines. The Talos install itself comes from
-[talos-cluster-kit](https://github.com/mitstack-eu/talos-cluster-kit).
+[talos-cluster-kit](https://github.com/mitstack-eu/talos-cluster-kit), and
+[ADR 0095](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0095-mitstack-clusters-run-talos-across-fsn1-nbg1-and-hel1-with-a-load-balancer-per-location.md)
+records the design.
 
 The block is licensed under the Business Source License 1.1, with a grant
 that allows production use only for infrastructure the mitstack platform
 manages. [LICENSE](LICENSE) holds the full terms.
+
+## What a subscribe builds
+
+A subscribe builds one control-plane node in the location the subscriber
+picks: `fsn1`, `nbg1` or `hel1`, with `nbg1` when none is given. Any other
+location is refused with a message naming the three, before any call to
+Hetzner. The node boots from the cluster's own disk image, which embeds the
+whole machine configuration, so the node carries no user data and has no
+public address.
+
+| Resource | What it does | Where |
+|---|---|---|
+| Network `10.0.0.0/16` | Holds every server and load balancer, and routes `0.0.0.0/0` to the gateway at `10.0.0.2` | `ensureNetwork` in `resource.go` |
+| Firewall | Holds no rule, and is applied to every server, so nothing reaches a server from the internet | `ensureFirewall` in `resource.go` |
+| Gateway | The only server with a public address. It runs the kit's cloud-config, which forwards and records the node's DNS, NTP and HTTPS and serves its image mirror | `createGateway` in `install.go` |
+| API load balancer | Carries the Kubernetes API on port 6443 on the private network, with no public interface | `apiLoadBalancer` in `resource.go` |
+| Ingress load balancer | Serves ports 80 and 443 on its public address to the NodePorts 30080 and 30081, with PROXY protocol | `ingressLoadBalancer` in `resource.go` |
+| Builder | A short-lived server that builds the image with imager, writes it over its own disk and powers off | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
+| Snapshot | The builder's disk, which every node boots from | `finishBuild` in `resource.go` |
+| Node | The control-plane node, booted from the snapshot | `createNode` in `resource.go` |
+| Cluster repository | A private GitHub repository, `<appName>-cluster`, that Argo CD syncs | `repository.go` |
+
+Both load balancers find their target by the label
+`mitstack.dev/role=node`, so a replaced node takes its place with no edit to
+either. Every Hetzner resource carries the labels `mitstack.dev/block` and
+`mitstack.dev/subscription`, and every verb finds the cluster by them alone.
+
+## How a subscribe proceeds
+
+Each lifecycle call takes the cluster as far as it can and returns, and the
+platform calls again until the cluster reads present. A run moves through
+these steps:
+
+1. The first call creates the network, the firewall, the repository and both
+   load balancers. It then mints the cluster's keys, renders the machine
+   configuration with `nodeconfig.Render`, and creates the gateway and the
+   builder.
+2. The builder pulls imager through the gateway, builds the image and powers
+   itself off. A call that finds the builder off snapshots its disk, deletes
+   the builder and creates the node from the snapshot.
+3. The gateway finds the node among the addresses its flow record holds,
+   proves it by the node's Talos API certificate, and runs the kit's etcd
+   bootstrap once with a two-hour admin talosconfig.
+4. Inside the cluster, a Job spends the one-time enrolment token for the
+   report token and the repository token. Argo CD then syncs `cluster/` and
+   `repository-credentials/` from the cluster repository, and the kit's node
+   report posts every five minutes.
+
+The cluster reads present once every resource is in place and the newest node
+report since the node's creation reads every node Ready. A builder that has
+not powered off 30 minutes after its creation is deleted, and the call is
+refused.
+
+The cluster's keys exist only in the call that mints them, the builder's user
+data and the snapshot. A cluster that loses its gateway while the node runs is
+therefore refused rather than rebuilt, since the gateway's certificate
+authority went with it. Unsubscribe deletes every server, load balancer,
+snapshot, firewall and network, then the repository when it carries the
+subscription's mark.
+
+## What the operator's host provides
+
+The operator reads two settings from its environment and refuses a subscribe
+without them, because every node exports its logs over OTLP with TLS verified.
+
+| Variable | What it holds | Example |
+|---|---|---|
+| `MITSTACK_LOG_EXPORT_ENDPOINT` | The OTLP receiver's `host:port` | `otlp.mitstack.dev:4317` |
+| `MITSTACK_LOG_EXPORT_CA` | The PEM certificate the receiver's certificate chains to | `-----BEGIN CERTIFICATE-----` |
+
+The node report and the enrolment Jobs run in the kit's tools image.
+`tools-image.txt` pins that image by digest, and a release whose file is empty
+refuses every subscribe. CI's `tools image` job builds the image from the kit
+release `go.mod` requires, and on `main` pushes it to
+`ghcr.io/mitstack-eu/hcloud-talos-cluster-tools` and signs it.
+
+## How you change the block
+
+The tests run every verb against an in-memory Hetzner project, a GitHub fake
+and a fake of the platform's node reports, in `harness_test.go`. The script
+tests run each embedded script with bash against fake commands. Run the suites
+from the repository root:
+
+```bash
+go vet ./...
+go test ./...
+shellcheck scripts/*.sh
+```
+
+| Test file | What it proves |
+|---|---|
+| `subscribe_test.go` | A one-node cluster in each of the three locations, the node with no user data, only the gateway with a public address, and every refusal |
+| `userdata_test.go` | The builder's embedded configuration and the gateway's two cloud-config parts |
+| `scripts_test.go` | The build, the first-node bootstrap and the cluster's credential calls |
+| `teardown_test.go` | Unsubscribe deletes every resource, the snapshot included |
+| `declared_resources_test.go`, `secrets_leak_test.go` | The operator kit's block guards and that no token reaches an answer or the logs |
