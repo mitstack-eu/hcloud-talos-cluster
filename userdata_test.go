@@ -3,6 +3,9 @@ package main
 // The builder embeds the kit's configuration with the block's own manifests, and the gateway runs the kit's cloud-config.
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -10,6 +13,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/mail"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -24,9 +28,17 @@ import (
 )
 
 type renderedCloudConfig struct {
-	MergeHow   []mergeRule `yaml:"merge_how"`
-	WriteFiles []cloudFile `yaml:"write_files"`
-	RunCmd     [][]string  `yaml:"runcmd"`
+	MergeHow   []mergeRule    `yaml:"merge_how"`
+	WriteFiles []renderedFile `yaml:"write_files"`
+	RunCmd     [][]string     `yaml:"runcmd"`
+}
+
+// renderedFile is a write_files entry as cloud-init reads it, its content still in the encoding it names.
+type renderedFile struct {
+	Path        string `yaml:"path"`
+	Permissions string `yaml:"permissions"`
+	Content     string `yaml:"content"`
+	Encoding    string `yaml:"encoding"`
 }
 
 func decodeCloudConfig(t *testing.T, data string) renderedCloudConfig {
@@ -37,15 +49,30 @@ func decodeCloudConfig(t *testing.T, data string) renderedCloudConfig {
 	return c
 }
 
-func (c renderedCloudConfig) file(t *testing.T, path string) cloudFile {
+// file returns the file cloud-init writes at path, its content decoded as cloud-init's write_files decodes it.
+func (c renderedCloudConfig) file(t *testing.T, path string) renderedFile {
 	t.Helper()
 	for _, f := range c.WriteFiles {
-		if f.Path == path {
-			return f
+		if f.Path != path {
+			continue
 		}
+		switch f.Encoding {
+		case "":
+		case "gz+b64":
+			zipped, err := base64.StdEncoding.DecodeString(f.Content)
+			require.NoError(t, err, "the base64 of %s", path)
+			r, err := gzip.NewReader(bytes.NewReader(zipped))
+			require.NoError(t, err, "the gzip of %s", path)
+			plain, err := io.ReadAll(r)
+			require.NoError(t, err, "the gzip of %s", path)
+			f.Content, f.Encoding = string(plain), ""
+		default:
+			require.Failf(t, "unknown encoding", "%s is in the encoding %q, which this test does not decode", path, f.Encoding)
+		}
+		return f
 	}
 	require.Failf(t, "no such file", "the cloud-config writes no %s", path)
-	return cloudFile{}
+	return renderedFile{}
 }
 
 // gatewayParts splits the gateway's MIME user data into its cloud-config parts, in order.
@@ -188,4 +215,41 @@ func TestInstall_KeepsTheClustersKeysOutOfTheOutputsAndTheStatus(t *testing.T) {
 		}
 		assert.NotContains(t, obs.StatusDetail, key, "the status carries a cluster key")
 	}
+}
+
+func TestBuilder_UserDataIsOneCloudConfigDocumentWithinHetznersLimit(t *testing.T) {
+	inst, err := renderInstallation(installInputs{
+		subID: testSub, appName: testApp, repo: repoFor(testOwner, testApp),
+		apiAddress: netip.MustParseAddr("10.0.0.3"), now: testStart,
+	})
+	require.NoError(t, err)
+	data := inst.builderUserData
+
+	decoder := yaml.NewDecoder(strings.NewReader(data))
+	var docs []map[string]any
+	for {
+		var doc map[string]any
+		err := decoder.Decode(&doc)
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		docs = append(docs, doc)
+	}
+
+	t.Logf("the builder's user data is %d bytes", len(data))
+	assert.LessOrEqual(t, len(data), hetznerUserDataLimit, "the builder's user data is %d bytes; Hetzner accepts %d", len(data), hetznerUserDataLimit)
+	assert.True(t, strings.HasPrefix(data, "#cloud-config\n"), "the builder's user data opens with the cloud-config header")
+	assert.Len(t, docs, 1, "YAML documents in the builder's user data")
+}
+
+func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
+	incompressible := make([]byte, 2*hetznerUserDataLimit)
+	_, err := rand.Read(incompressible)
+	require.NoError(t, err)
+
+	_, err = builderUserData(incompressible)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "over Hetzner's 32768")
 }

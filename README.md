@@ -35,7 +35,7 @@ public address.
 | Gateway | The only server with a public address. It runs the kit's cloud-config, which forwards and records the node's DNS, NTP and HTTPS and serves its image mirror | `createGateway` in `install.go` |
 | API load balancer | Carries the Kubernetes API on port 6443 at `10.0.0.3` on the private network, with no public interface | `apiLoadBalancer` and `ensureLoadBalancer` in `resource.go` |
 | Ingress load balancer | Serves ports 80 and 443 on its public address to the NodePorts 30080 and 30081, with PROXY protocol, and sits at `10.0.0.4` on the network | `ingressLoadBalancer` and `ensureLoadBalancer` in `resource.go` |
-| Builder | A short-lived server that builds the image with imager, writes it over its own disk and powers off | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
+| Builder | A short-lived server that builds the image with imager, writes it over its own disk and powers off. Its user data carries the machine configuration gzipped, in cloud-init's `gz+b64` encoding, since as text it is over Hetzner's 32 KiB user data limit | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
 | Snapshot | The builder's disk, which every node boots from | `finishBuild` in `resource.go` |
 | Node | The control-plane node, booted from the snapshot | `createNode` in `resource.go` |
 | Cluster repository | A private GitHub repository, `<appName>-cluster`, that Argo CD syncs | `repository.go` |
@@ -125,7 +125,7 @@ shellcheck scripts/*.sh
 | Test file | What it proves |
 |---|---|
 | `subscribe_test.go` | A one-node cluster in each of the three locations, the node with no user data, only the gateway with a public address, and every refusal |
-| `userdata_test.go` | The builder's embedded configuration and the gateway's two cloud-config parts |
+| `userdata_test.go` | The builder's embedded configuration, its user data within Hetzner's limit, and the gateway's two cloud-config parts |
 | `scripts_test.go` | The build, the first-node bootstrap and the cluster's credential calls |
 | `teardown_test.go` | Unsubscribe deletes every resource, the snapshot included |
 | `declared_resources_test.go`, `secrets_leak_test.go` | The operator kit's block guards and that no token reaches an answer or the logs |
