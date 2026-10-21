@@ -8,12 +8,28 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/mitstack-eu/operator-kit/v2/contract"
 	"github.com/mitstack-eu/operator-kit/v2/events"
 	"github.com/mitstack-eu/operator-kit/v2/observe"
 )
+
+const operatorEventsPath = "/v1/webhooks/operator-events"
+
+// platformOrigin is where the operator reads the node reports, from the events callback the request carries.
+func platformOrigin(ctx context.Context) (string, error) {
+	env, ok := events.EnvelopeFrom(ctx)
+	if !ok || env.Callback == nil {
+		return "", errors.New("the request carries no events callback, so the node reports cannot be read from the platform")
+	}
+	origin, found := strings.CutSuffix(env.Callback.URL, operatorEventsPath)
+	if !found || !strings.HasPrefix(origin, "https://") {
+		return "", fmt.Errorf("the events callback URL is not an https URL ending in %s", operatorEventsPath)
+	}
+	return origin, nil
+}
 
 // The platform keeps 50 reports of up to 256 KiB each and answers each with its verdict.
 const maxNodeReportsBody = 32 << 20
