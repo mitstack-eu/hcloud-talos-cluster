@@ -22,6 +22,7 @@ metadata:
   owner: mitstack
 spec:
   version: 0.2.0
+  releaseClass: feature
   releaseNote: >-
     One subscribe now carries the cluster to its running node, because each
     call takes one step that waits on Hetzner and validate asks the platform
