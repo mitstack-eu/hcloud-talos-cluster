@@ -12,6 +12,7 @@ import (
 	"github.com/mitstack-eu/operator-kit/v3/handler"
 	"github.com/mitstack-eu/operator-kit/v3/kittest"
 	"github.com/mitstack-eu/operator-kit/v3/webhook"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +39,12 @@ func leakingEnv(t *testing.T) (*env, func(*webhook.LogBuffer) (http.Handler, *ki
 	e.hetzner.instantBuild = true
 	e.reports.report(testStart.Add(time.Hour), true)
 	e.hetzner.failNext = errors.New("hetzner rejected the token " + testHetznerKey + " used with " + testGitHubToken)
-	return e, func(logs *webhook.LogBuffer) (http.Handler, *kittest.Signer) {
+	return e, leakServer(t, e)
+}
+
+func leakServer(t *testing.T, e *env) func(*webhook.LogBuffer) (http.Handler, *kittest.Signer) {
+	t.Helper()
+	return func(logs *webhook.LogBuffer) (http.Handler, *kittest.Signer) {
 		signer := kittest.NewSigner(t, "kid-hcloud-talos-cluster", 41)
 		cfg := handlerConfig(signer.JWKSServer(t), logs)
 		cfg.Resource = e.block
@@ -47,6 +53,36 @@ func leakingEnv(t *testing.T) (*env, func(*webhook.LogBuffer) (http.Handler, *ki
 		h, err := handler.New(cfg)
 		require.NoError(t, err)
 		return h, signer
+	}
+}
+
+func TestNoSecretLeak_TheBuildProgressAndTheImageBuildFailedRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failMetrics error
+	}{
+		{name: "metrics read"},
+		{name: "a metrics read failing quoting both tokens", failMetrics: errors.New("hetzner rejected the token " + testHetznerKey + " used with " + testGitHubToken)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.buildingBuilder()
+			builder := e.hetzner.builderMetrics(t, map[string][]float64{"cpu": {90, 4}, "disk.0.bandwidth.write": {mib, 0}})
+			e.hetzner.failMetrics = tc.failMetrics
+			leak := kittest.SecretLeak{Secrets: []string{testHetznerKey, testGitHubToken}, Serve: leakServer(t, e)}
+
+			e.hetzner.failNext = errors.New("hetzner rejected the token " + testHetznerKey + " used with " + testGitHubToken)
+			leak.Requests = []kittest.LeakRequest{
+				{Name: "a subscribe whose Hetzner call fails quoting both tokens", Body: hookBody("subscribe", e), Fails: true},
+				{Name: "a validate while the builder builds", Body: hookBody("validate", e)},
+			}
+			kittest.AssertNoSecretLeak(t, leak)
+			e.now = builder.Created.Add(buildDeadline)
+			leak.Requests = []kittest.LeakRequest{{Name: "a subscribe refusing the build past its deadline", Body: hookBody("subscribe", e), Fails: true}}
+			kittest.AssertNoSecretLeak(t, leak)
+
+			assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder the refusal deleted")
+		})
 	}
 }
 

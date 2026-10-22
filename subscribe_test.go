@@ -95,6 +95,135 @@ func TestSubscribe_FailsOnceTheBuilderStillRunsPastItsDeadline(t *testing.T) {
 	assert.Empty(t, e.hetzner.byRole(t, roleNode), "a node with no image")
 }
 
+// buildingBuilder settles a subscription until its builder runs a build that never ends.
+func (e *env) buildingBuilder() *engine {
+	e.t.Helper()
+	e.buildTakes = 0
+	p := e.engine()
+	p.settle(func() bool { return e.building() })
+	require.True(e.t, e.building(), "the builder never started its build")
+	return p
+}
+
+const mib = 1 << 20
+
+func TestValidate_TheBuildProgressCarriesTheBuildersCPUAndDiskFromItsCreation(t *testing.T) {
+	e := newEnv(t)
+	p := e.buildingBuilder()
+	builder := e.hetzner.builderMetrics(t, map[string][]float64{
+		"cpu":                    {5, 120, 118.7},
+		"disk.0.bandwidth.read":  {0, 0, 0},
+		"disk.0.bandwidth.write": {0, 1 * mib, 2 * mib},
+	})
+	e.now = builder.Created.Add(4 * time.Minute)
+
+	v := p.post("validate")
+
+	require.Equal(t, http.StatusOK, v.status, "the validate: %s", v.detail)
+	assert.True(t, v.pending, "the validate of a running build: %s", v.detail)
+	progress := v.observed(resCluster).StatusDetail
+	assert.Contains(t, progress, "is building the cluster's image")
+	assert.Contains(t, progress, "CPU at 118.7% over the last minute")
+	assert.Contains(t, progress, "120.0 MiB written to disk over the last minute")
+	assert.Contains(t, progress, "180.0 MiB since its creation")
+	reads := e.hetzner.metricsReads
+	require.NotEmpty(t, reads, "the validate never read the builder's metrics")
+	last := reads[len(reads)-1]
+	assert.Equal(t, metricsRead{id: builder.ID, start: builder.Created, end: e.now}, last, "the metrics read")
+}
+
+func TestValidate_TheBuildProgressSaysWhenHetznerHoldsNoMetricsYet(t *testing.T) {
+	e := newEnv(t)
+	p := e.buildingBuilder()
+
+	v := p.post("validate")
+
+	require.Equal(t, http.StatusOK, v.status, "the validate: %s", v.detail)
+	assert.Contains(t, v.observed(resCluster).StatusDetail, "Hetzner holds no metrics for the builder yet")
+}
+
+func TestValidate_AFailedMetricsReadLeavesTheBuildProgressPendingAndSaysSo(t *testing.T) {
+	e := newEnv(t)
+	p := e.buildingBuilder()
+	e.hetzner.failMetrics = errors.New("hetzner answered 503")
+
+	v := p.post("validate")
+
+	require.Equal(t, http.StatusOK, v.status, "the validate: %s", v.detail)
+	assert.True(t, v.pending, "the validate: %s", v.detail)
+	progress := v.observed(resCluster).StatusDetail
+	assert.Contains(t, progress, "is building the cluster's image")
+	assert.Contains(t, progress, "the builder's Hetzner metrics could not be read")
+}
+
+func TestSubscribe_TheImageBuildFailedRefusalSaysWhereTheBuildStopped(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		series map[string][]float64
+		want   func(created time.Time) []string
+	}{
+		{
+			name: "a build that wrote and went quiet",
+			series: map[string][]float64{
+				"cpu":                    {80, 95, 40, 2},
+				"disk.0.bandwidth.read":  {0, 0, 0, 0},
+				"disk.0.bandwidth.write": {2 * mib, 0, 0, 0},
+			},
+			want: func(created time.Time) []string {
+				return []string{
+					"CPU at 2.0% over the last minute",
+					"0 B written to disk over the last minute",
+					"120.0 MiB since its creation",
+					"its disk last moved at " + created.Add(time.Minute).UTC().Format(time.RFC3339),
+					"its CPU was last above 10% at " + created.Add(3*time.Minute).UTC().Format(time.RFC3339),
+				}
+			},
+		},
+		{
+			name: "a build that never got going",
+			series: map[string][]float64{
+				"cpu":                    {1, 2},
+				"disk.0.bandwidth.read":  {0, 0},
+				"disk.0.bandwidth.write": {0, 0},
+			},
+			want: func(time.Time) []string {
+				return []string{"0 B since its creation", "its disk never moved", "its CPU was never above 10%"}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			p := e.buildingBuilder()
+			builder := e.hetzner.builderMetrics(t, tc.series)
+
+			final := p.settle(nil)
+
+			require.Equal(t, http.StatusBadRequest, final.status, "the last answer: %s", final.detail)
+			assert.Contains(t, final.detail, "image-build-failed")
+			for _, want := range tc.want(builder.Created) {
+				assert.Contains(t, final.detail, want)
+			}
+			reads := e.hetzner.metricsReads
+			require.NotEmpty(t, reads, "the refusal never read the builder's metrics")
+			assert.Equal(t, metricsRead{id: builder.ID, start: builder.Created, end: e.now}, reads[len(reads)-1], "the refusal's metrics read")
+			assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder past its deadline")
+		})
+	}
+}
+
+func TestSubscribe_AFailedMetricsReadStillRefusesTheBuildAndSaysSo(t *testing.T) {
+	e := newEnv(t)
+	p := e.buildingBuilder()
+	e.hetzner.failMetrics = errors.New("hetzner answered 503")
+
+	final := p.settle(nil)
+
+	require.Equal(t, http.StatusBadRequest, final.status, "the last answer: %s", final.detail)
+	assert.Contains(t, final.detail, "image-build-failed")
+	assert.Contains(t, final.detail, "the builder's Hetzner metrics could not be read")
+	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder past its deadline")
+}
+
 func TestSubscribe_LoadBalancersFindTheNodeByLabel(t *testing.T) {
 	e := newEnv(t)
 

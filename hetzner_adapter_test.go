@@ -1,7 +1,8 @@
 package main
 
 // The adapter on the wire: a node with no user data and no public address, a private load balancer with no public
-// interface, a server Hetzner cannot place refused, a snapshot started unwaited, and a start read from its action.
+// interface, a server Hetzner cannot place refused, a snapshot started unwaited, a start read from its action, and a
+// server's metrics read a minute a point.
 
 import (
 	"context"
@@ -9,7 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
+	"time"
 
 	"github.com/mitstack-eu/operator-kit/v3/handler"
 	"github.com/stretchr/testify/assert"
@@ -179,6 +182,39 @@ func TestHetznerAdapter_AServerHasStartedOnceItsStartActionSucceeded(t *testing.
 		require.NoError(t, err)
 		assert.Equal(t, want, started, "a server whose finished action is %s", command)
 	}
+}
+
+func TestHetznerAdapter_ReadsTheServersCPUAndDiskMetricsAMinuteAPoint(t *testing.T) {
+	var path string
+	var query url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, query = r.URL.Path, r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"metrics": {"start": "2026-10-22T18:09:28Z", "end": "2026-10-22T18:11:28Z", "step": 60, "time_series": {
+			"cpu": {"values": [[1761156600, "4.500000"], [1761156660, "118.709166"]]},
+			"disk.0.bandwidth.write": {"values": [[1761156600, "0.000000"], [1761156660, "156655104.000000"]]}}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	swap(t, &hetznerEndpoint, srv.URL)
+	start := time.Date(2026, 10, 22, 18, 9, 28, 0, time.UTC)
+
+	m, err := newHetznerAPI("token").ServerMetrics(context.Background(), 7, start, start.Add(2*time.Minute))
+
+	require.NoError(t, err)
+	assert.Equal(t, "/servers/7/metrics", path)
+	assert.Equal(t, []string{"cpu", "disk"}, query["type"], "the metric types read")
+	assert.Equal(t, "60", query.Get("step"), "the step in seconds")
+	assert.Equal(t, "2026-10-22T18:09:28Z", query.Get("start"))
+	assert.Equal(t, "2026-10-22T18:11:28Z", query.Get("end"))
+	assert.Equal(t, time.Minute, m.Step)
+	assert.Equal(t, []metricPoint{
+		{At: time.Unix(1761156600, 0).UTC(), Value: 4.5},
+		{At: time.Unix(1761156660, 0).UTC(), Value: 118.709166},
+	}, m.Series["cpu"])
+	assert.Equal(t, []metricPoint{
+		{At: time.Unix(1761156600, 0).UTC(), Value: 0},
+		{At: time.Unix(1761156660, 0).UTC(), Value: 156655104},
+	}, m.Series["disk.0.bandwidth.write"])
 }
 
 func TestHetznerAdapter_ReadsWhichServerTypesTheLocationCanOrder(t *testing.T) {
