@@ -47,17 +47,13 @@ func (o labelledObserver) ObserveResource(ctx context.Context, r contract.Resour
 	if err != nil {
 		return contract.Observation{}, fmt.Errorf("listing the subscription's %ss: %w", o.kind, err)
 	}
-	return labelledObservation(o.kind, ids), nil
-}
-
-func labelledObservation(kind string, ids []int64) contract.Observation {
 	switch len(ids) {
 	case 0:
-		return contract.Observation{State: contract.Absent, StatusDetail: "no " + kind + " carries this subscription's labels"}
+		return contract.Observation{State: contract.Absent, StatusDetail: "no " + o.kind + " carries this subscription's labels"}, nil
 	case 1:
-		return contract.Observation{State: contract.Present, StatusDetail: fmt.Sprintf("%s %d carries this subscription's labels", kind, ids[0])}
+		return contract.Observation{State: contract.Present, StatusDetail: fmt.Sprintf("%s %d carries this subscription's labels", o.kind, ids[0])}, nil
 	default:
-		return unknown(duplicatesDetail(kind, ids))
+		return unknown(duplicatesDetail(o.kind, ids)), nil
 	}
 }
 
@@ -220,7 +216,7 @@ func stepLeft(ctx context.Context, d contract.Desired, api hetznerAPI, st cluste
 }
 
 // enrolment gives a cluster not yet present the values a node's enrolment is judged against, once the gateway carries
-// its digest and the marked repository is named, so the platform holds them before the node can report.
+// its digest and the marked repository exists, so the platform holds them before the node can report.
 func (st clusterState) enrolment(repo repoObservation) (map[string]string, string) {
 	gw, ok := st.server(roleGateway)
 	switch {
@@ -406,11 +402,18 @@ func (o repoObservation) describe() string {
 
 // observeRepo leaves the repository unknown, with no GitHub call, when the request cannot name it or reach GitHub.
 func observeRepo(ctx context.Context, d contract.Desired) (repoObservation, error) {
-	obs, named := nameRepo(d)
-	if !named {
+	appName := d.Params["appName"]
+	if appName == "" {
+		return repoObservation{name: "(unnamed)", detail: `the cluster repository cannot be named: params["appName"] is empty`}, nil
+	}
+	obs := repoObservation{name: repoFor(d.Secrets["github"]["owner"], appName).fullName()}
+	gh, err := dialGitHub(d, appName)
+	if err != nil {
+		obs.detail = "the cluster repository cannot be read: " + refusalDetail(err)
 		return obs, nil
 	}
-	read, err := obs.gh.readRepo(ctx, d.SubscriptionID)
+	obs.name, obs.url, obs.gh = gh.repo.fullName(), gh.repo.url(), gh
+	read, err := gh.readRepo(ctx, d.SubscriptionID)
 	if err != nil {
 		return obs, err
 	}
@@ -423,22 +426,6 @@ func observeRepo(ctx context.Context, d contract.Desired) (repoObservation, erro
 		obs.state = repoPresent
 	}
 	return obs, nil
-}
-
-// nameRepo names the cluster repository from the request alone, with no GitHub call, and says why when it cannot.
-func nameRepo(d contract.Desired) (repoObservation, bool) {
-	appName := d.Params["appName"]
-	if appName == "" {
-		return repoObservation{name: "(unnamed)", detail: `the cluster repository cannot be named: params["appName"] is empty`}, false
-	}
-	obs := repoObservation{name: repoFor(d.Secrets["github"]["owner"], appName).fullName()}
-	gh, err := dialGitHub(d, appName)
-	if err != nil {
-		obs.detail = "the cluster repository cannot be read: " + refusalDetail(err)
-		return obs, false
-	}
-	obs.name, obs.url, obs.gh = gh.repo.fullName(), gh.repo.url(), gh
-	return obs, true
 }
 
 func unknown(detail string) contract.Observation {
