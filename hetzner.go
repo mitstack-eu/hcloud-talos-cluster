@@ -23,6 +23,7 @@ type hetznerAPI interface {
 	CreateServers(ctx context.Context, specs ...serverSpec) ([]hcServer, error)
 	// ServerStarted reports whether Hetzner has finished powering the server on at least once.
 	ServerStarted(ctx context.Context, id int64) (bool, error)
+	// AttachServerToNetwork with an empty ip lets Hetzner give the server the network's first free address.
 	AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error
 	PowerOnServer(ctx context.Context, id int64) error
 	DeleteServer(ctx context.Context, id int64) error

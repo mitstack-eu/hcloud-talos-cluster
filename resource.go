@@ -75,8 +75,9 @@ const (
 // allowedLocations are the three locations of the eu-central network zone the cluster's subnet lives in.
 var allowedLocations = []string{"fsn1", "nbg1", "hel1"}
 
-// allowedServerTypes are x86, since the image is amd64, and hold a control plane with Cilium and Argo CD.
-var allowedServerTypes = []string{"cx23", "cx33", "cx43", "cx53", "cpx22", "cpx52", "cpx62"}
+// allowedServerTypes are x86, since the image is amd64, hold a control plane with Cilium and Argo CD, and are each one
+// the platform's hetzner.server type allows.
+var allowedServerTypes = []string{"cx23", "cx33", "cx43", "cx53", "cpx52", "cpx62"}
 
 type clusterParams struct {
 	appName, location, serverType string
@@ -289,6 +290,10 @@ func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool,
 	case gw.PrivateIPs[site.network.ID] == "":
 		return step{"attach the gateway to the network at its fixed address before its first boot", func(ctx context.Context) error {
 			return c.api.AttachServerToNetwork(ctx, gw.ID, site.network.ID, gatewayAddress)
+		}}, true, nil
+	case hasBuilder && builder.PrivateIPs[site.network.ID] == "":
+		return step{"attach the builder to the network once the gateway holds its address", func(ctx context.Context) error {
+			return c.api.AttachServerToNetwork(ctx, builder.ID, site.network.ID, "")
 		}}, true, nil
 	case gw.Status == serverOff:
 		return step{"power on the gateway", func(ctx context.Context) error { return c.api.PowerOnServer(ctx, gw.ID) }}, true, nil
