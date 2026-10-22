@@ -29,9 +29,8 @@ const fakeLoader = "ld-linux-x86-64.so.2"
 
 var fakeLibraries = []string{"libtinfo.so.6", "liblzma.so.5", "libc.so.6"}
 
-// buildFakes stand in for the builder's commands, mount recording each tmpfs and docker run failing as imager does when
-// /out lies on a tmpfs smaller than imagerPeakBytes. fsfreeze lists the build tmpfs and turns every fake left on the
-// disk into one that records it ran, the loader records the LC_ALL it runs in, and FAKE_FAILING names a fake that fails.
+// buildFakes stand in for the builder's commands, docker run failing as imager does when /out lies on a tmpfs smaller
+// than imagerPeakBytes, fsfreeze turning every fake left on the disk into a recorder, and FAKE_FAILING naming one to fail.
 func buildFakes(imagerExit int) map[string]string {
 	exit := strconv.Itoa(imagerExit)
 	return map[string]string{
@@ -50,6 +49,7 @@ case ${1##*/} in
   bash) printf '\tlibtinfo.so.6 => %s/lib/libtinfo.so.6 (0x00007f87e5459000)\n' "$HOME" ;;
   zstd) printf '\tliblzma.so.5 => %s/lib/liblzma.so.5 (0x00007f87e5254000)\n' "$HOME" ;;
 esac
+[ "${FAKE_FAILING:-}" != ldd ] || printf '\tlibmissing.so.1 => not found\n'
 printf '\tlibc.so.6 => %s/lib/libc.so.6 (0x00007f87e4e92000)\n\t%s/` + fakeLoader + ` (0x00005574bf12e000)\n' "$HOME" "$HOME"`,
 		fakeLoader: `printf '%s\n' "${LC_ALL-unset}" >> "$HOME/loader-locales"
 while [ "$#" -gt 0 ]; do
@@ -123,6 +123,7 @@ func runBuild(t *testing.T, imagerExit int, extraEnv ...string) scriptRun {
 // index among the calls.
 type loaderRun struct {
 	program, libraries string
+	inhibitsCache      bool
 	call               int
 }
 
@@ -138,6 +139,8 @@ func (r scriptRun) loaderRuns(t *testing.T) []loaderRun {
 		fields := strings.Fields(args)
 		for j := 0; j < len(fields) && run.program == ""; j++ {
 			switch {
+			case fields[j] == "--inhibit-cache":
+				run.inhibitsCache = true
 			case fields[j] == "--library-path":
 				require.Less(t, j+1, len(fields), "--library-path without a path: %s", call)
 				j++
@@ -223,6 +226,7 @@ func TestBuildImage_FreezesTheRootThenOverwritesAndPowersOffFromTheTmpfsAlone(t 
 	for _, loaded := range runs {
 		assert.Greater(t, loaded.call, freeze, "%s ran before the freeze: %v", loaded.program, calls)
 		assert.Contains(t, atFreeze, loaded.program, "%s was not copied into the tmpfs before the freeze", loaded.program)
+		assert.True(t, loaded.inhibitsCache, "the loader may read /etc/ld.so.cache from the disk for %s", loaded.program)
 		for _, library := range fakeLibraries {
 			assert.Contains(t, atFreeze, filepath.Join(loaded.libraries, library),
 				"%s loads its libraries from %s, which held no copy of %s at the freeze", loaded.program, loaded.libraries, library)
@@ -250,6 +254,15 @@ func TestBuildImage_AFailedOverwriteAfterTheFreezeKeepsTheBuilderRunning(t *test
 			assert.NotContains(t, run.out, "a diagnostic on stderr", "the final stage printed after the freeze")
 		})
 	}
+}
+
+func TestBuildImage_ALibraryLddCannotResolveFailsTheBuildBeforeTheFreeze(t *testing.T) {
+	run := runBuild(t, 0, "FAKE_FAILING=ldd")
+
+	require.Error(t, run.err)
+	assert.Contains(t, run.out, "libmissing.so.1", "the failure does not name the library ldd could not resolve")
+	assert.NotContains(t, run.tools.Calls(t), "fsfreeze -f /", "the root filesystem froze with a library the final stage cannot load")
+	assert.NoFileExists(t, filepath.Join(run.dir, "proc", "sysrq-trigger"), "the builder powered off")
 }
 
 func TestBuildImage_AFailedImagerWritesNothingAndKeepsTheBuilderRunning(t *testing.T) {
