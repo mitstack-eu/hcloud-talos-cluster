@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mitstack-eu/operator-kit/v2/contract"
-	"github.com/mitstack-eu/operator-kit/v2/kittest"
-	"github.com/mitstack-eu/operator-kit/v2/observe"
+	"github.com/mitstack-eu/operator-kit/v3/contract"
+	"github.com/mitstack-eu/operator-kit/v3/kittest"
+	"github.com/mitstack-eu/operator-kit/v3/observe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -81,6 +81,29 @@ func (p clusterProvider) Lose(ctx context.Context, r contract.CreatedResource) e
 	return fmt.Errorf("no declared resource is of type %q", r.Type)
 }
 
+// convergingBlock sends Ensure until it takes no step, as the engine's re-drives do, since each guard sends one subscribe.
+type convergingBlock struct {
+	*blockResource
+	e *env
+}
+
+func (b convergingBlock) Ensure(ctx context.Context, d contract.Desired) error {
+	for before := -1; before != b.e.changes(); {
+		before = b.e.changes()
+		if err := b.blockResource.Ensure(ctx, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b convergingBlock) EnsureResources(ctx context.Context, d contract.Desired) ([]contract.CreatedResource, error) {
+	if err := b.Ensure(ctx, d); err != nil {
+		return nil, err
+	}
+	return b.blockResource.EnsureResources(ctx, d)
+}
+
 func blockUnderTest(t *testing.T) kittest.Block {
 	t.Helper()
 	e := newEnv(t)
@@ -93,7 +116,7 @@ func blockUnderTest(t *testing.T) kittest.Block {
 	return kittest.Block{
 		Manifest:  manifestYAML,
 		Types:     snap,
-		Handler:   e.block,
+		Handler:   convergingBlock{blockResource: e.block, e: e},
 		Observers: observers(),
 		Provider:  clusterProvider{e: e},
 		Desired:   d,

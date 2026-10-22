@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/mitstack-eu/operator-kit/v2/handler"
+	"github.com/mitstack-eu/operator-kit/v3/handler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v4"

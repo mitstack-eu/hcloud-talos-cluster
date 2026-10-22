@@ -1,14 +1,15 @@
 package main
 
-// Subscribe builds a one-node Talos cluster: gateway and builder, then the snapshot, then the node that boots from it.
+// Subscribe builds a one-node Talos cluster a step a call: gateway and builder, then the snapshot, then the node it boots.
 
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
-	"github.com/mitstack-eu/operator-kit/v2/contract"
+	"github.com/mitstack-eu/operator-kit/v3/contract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -78,32 +79,15 @@ func TestSubscribe_TheNodeCarriesNoUserDataAndOnlyTheGatewayHoldsAPublicAddress(
 	}
 }
 
-func TestSubscribe_DeletesTheBuilderWhoseUserDataHeldEveryKeyOnceItsDiskIsASnapshot(t *testing.T) {
+func TestSubscribe_FailsOnceTheBuilderStillRunsPastItsDeadline(t *testing.T) {
 	e := newEnv(t)
-	require.NoError(t, e.ensure())
-	require.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the first ensure")
+	e.buildTakes = 0
 
-	e.hetzner.powerOffBuilder(t)
-	require.NoError(t, e.ensure())
+	final := e.engine().settle(nil)
 
-	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "builders once the snapshot exists")
-	assert.Len(t, e.hetzner.byRole(t, roleNode), 1, "nodes once the snapshot exists")
-}
-
-func TestSubscribe_WaitsForTheBuilderAndRefusesOnePastItsDeadline(t *testing.T) {
-	e := newEnv(t)
-	require.NoError(t, e.ensure())
-
-	e.now = e.now.Add(buildDeadline - time.Minute)
-	require.NoError(t, e.ensure(), "an ensure within the deadline")
-	waiting := e.observe()
-	e.now = e.now.Add(2 * time.Minute)
-	err := e.ensure()
-
-	assert.Equal(t, contract.Unknown, waiting.State)
-	assert.Contains(t, waiting.StatusDetail, "is building the cluster's image")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "image-build-failed")
+	assert.Equal(t, http.StatusBadRequest, final.status, "the last answer: %s", final.detail)
+	assert.Contains(t, final.detail, "image-build-failed")
+	assert.Less(t, e.now.Sub(testStart), buildDeadline+5*time.Minute, "how long the subscription waited on a failed build")
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder past its deadline")
 	assert.Empty(t, e.hetzner.byRole(t, roleNode), "a node with no image")
 }
@@ -131,7 +115,7 @@ func TestSubscribe_LoadBalancersFindTheNodeByLabel(t *testing.T) {
 func TestSubscribe_TheLoadBalancersJoinTheNetworkAtAddressesApartFromTheGateways(t *testing.T) {
 	e := newEnv(t)
 
-	require.NoError(t, e.ensure())
+	require.NoError(t, e.converge())
 
 	networks, err := e.hetzner.ListNetworks(e.ctx(), subscriptionSelector(testSub))
 	require.NoError(t, err)
@@ -147,10 +131,10 @@ func TestSubscribe_ALoadBalancerStepThatFailedIsTakenUpByTheNextEnsureWithoutADu
 		t.Run(step, func(t *testing.T) {
 			e := newEnv(t)
 			e.hetzner.failLBStep[step] = errors.New("hetzner answered 503 to the " + step)
-			require.Error(t, e.ensure(), "the ensure whose %s fails", step)
+			require.Error(t, e.converge(), "the ensure whose %s fails", step)
 			assert.Empty(t, e.hetzner.byRole(t, roleGateway), "a gateway built before the API load balancer was finished")
 
-			require.NoError(t, e.ensure())
+			require.NoError(t, e.converge())
 
 			for _, r := range []role{roleAPI, roleIngress} {
 				lb := e.hetzner.loadBalancer(t, r)
@@ -168,7 +152,7 @@ func TestSubscribe_ALoadBalancerStepThatFailedIsTakenUpByTheNextEnsureWithoutADu
 func TestSubscribe_TheGatewayJoinsTheNetworkAtItsFixedAddressBeforeItBoots(t *testing.T) {
 	e := newEnv(t)
 
-	require.NoError(t, e.ensure())
+	require.NoError(t, e.converge())
 
 	gw := e.hetzner.specFor(t, roleGateway)
 	assert.True(t, gw.Stopped, "the gateway is created stopped")
@@ -242,9 +226,8 @@ func TestSubscribe_RefusesARepositoryWithoutTheSubscriptionsMark(t *testing.T) {
 
 func TestSubscribe_IsUnknownUntilTheNewestNodeReportReadsEveryNodeReady(t *testing.T) {
 	e := newEnv(t)
-	require.NoError(t, e.ensure())
-	e.hetzner.powerOffBuilder(t)
-	require.NoError(t, e.ensure())
+	e.hetzner.instantBuild = true
+	require.NoError(t, e.converge())
 	e.reports.report(e.now.Add(-time.Minute), true)
 
 	silent := e.observe()
@@ -274,12 +257,11 @@ func TestSubscribe_ConvergesWithoutDuplicatingOnceTheClusterIsPresent(t *testing
 
 func TestSubscribe_DeletesABuilderLeftBesideTheSnapshotWhoseDeleteFailed(t *testing.T) {
 	e := newEnv(t)
-	require.NoError(t, e.ensure())
-	e.hetzner.powerOffBuilder(t)
+	e.hetzner.instantBuild = true
 	e.hetzner.failDelete = errors.New("hetzner answered 503 to the builder's delete")
-	require.Error(t, e.ensure(), "the ensure whose builder delete fails")
+	require.Error(t, e.converge(), "the ensure whose builder delete fails")
 
-	require.NoError(t, e.ensure())
+	require.NoError(t, e.converge())
 
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "a powered-off builder, whose disk holds every cluster key, outlived its snapshot")
 	assert.Len(t, e.hetzner.byRole(t, roleNode), 1, "nodes")
@@ -287,12 +269,12 @@ func TestSubscribe_DeletesABuilderLeftBesideTheSnapshotWhoseDeleteFailed(t *test
 
 func TestSubscribe_AnInstallThatFailsAfterTheGatewayExistsLeavesNothingTheNextEnsureRefuses(t *testing.T) {
 	e := newEnv(t)
-	e.hetzner.failPowerOn = errors.New("hetzner answered 503 to the gateway's power-on")
-	require.Error(t, e.ensure(), "the ensure whose gateway power-on fails")
+	e.hetzner.failCreate[roleBuilder] = errors.New("hetzner answered 503 to the builder's create")
+	require.Error(t, e.converge(), "the ensure whose builder create fails")
 	assert.Empty(t, e.hetzner.byRole(t, roleGateway), "the gateway of a failed install")
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder of a failed install")
 
-	require.NoError(t, e.ensure())
+	require.NoError(t, e.converge())
 
 	assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the retry")
 	assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the retry")
@@ -305,14 +287,4 @@ func TestSubscribe_ReadsTheAPIAddressFromHetznerWhenTheCreateAnswerLacksIt(t *te
 	obs := e.subscribe()
 
 	assert.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
-}
-
-func TestSubscribe_OneSubscribeBuildsTheGatewayAndBuilderWhenTheAPIAddressIsAssignedLate(t *testing.T) {
-	e := newEnv(t)
-	e.hetzner.lbAddressAfterReads = 2
-
-	require.NoError(t, e.ensure())
-
-	assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the one subscribe")
-	assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the one subscribe")
 }

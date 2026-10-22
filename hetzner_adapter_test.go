@@ -1,6 +1,7 @@
 package main
 
-// The adapter's requests on the wire: a node with no user data and no public address, a private load balancer with no public interface.
+// The adapter on the wire: a node with no user data and no public address, a private load balancer with no public
+// interface, a server Hetzner cannot place refused, a snapshot started unwaited, and a start read from its action.
 
 import (
 	"context"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/mitstack-eu/operator-kit/v3/handler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +48,7 @@ func TestHetznerAdapter_CreatesTheNodeWithNoUserDataAndNoPublicAddress(t *testin
 			"action": ` + finishedAction + `, "next_actions": []}`,
 	})
 
-	_, err := newHetznerAPI("token").CreateServer(context.Background(), serverSpec{
+	_, err := newHetznerAPI("token").CreateServers(context.Background(), serverSpec{
 		Name: "node", ServerType: "cx33", Location: "nbg1", ImageID: 42, NetworkIDs: []int64{3}, FirewallIDs: []int64{4},
 	})
 
@@ -135,4 +137,46 @@ func TestHetznerAdapter_AnAttachWhoseActionEndsInAnErrorFails(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ip_not_available")
+}
+
+func TestHetznerAdapter_RefusesAServerHetznerCannotPlaceNamingItsReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusPreconditionFailed)
+		_, _ = w.Write([]byte(`{"error": {"code": "resource_unavailable", "message": "server type cx33 unavailable in nbg1"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	swap(t, &hetznerEndpoint, srv.URL)
+
+	_, err := newHetznerAPI("token").CreateServers(context.Background(), serverSpec{Name: "node", ServerType: "cx33", Location: "nbg1", ImageID: 42})
+
+	var refused *handler.Refused
+	require.ErrorAs(t, err, &refused)
+	assert.Equal(t, "server-unavailable", refused.Class)
+	assert.Contains(t, refused.Detail, "server type cx33 unavailable in nbg1")
+}
+
+func TestHetznerAdapter_StartsTheSnapshotWithoutWaitingForItsAction(t *testing.T) {
+	recordHetzner(t, map[string]string{
+		"POST /servers/7/actions/create_image": `{"image": {"id": 8, "status": "creating"},
+			"action": {"id": 3, "command": "create_image", "status": "running", "progress": 0, "resources": []}}`,
+	})
+
+	snap, err := newHetznerAPI("token").StartSnapshot(context.Background(), 7, snapshotSpec{Description: "image"})
+
+	require.NoError(t, err, "a wait would poll the running action, which this Hetzner does not serve")
+	assert.Equal(t, "creating", snap.Status)
+}
+
+func TestHetznerAdapter_AServerHasStartedOnceItsStartActionSucceeded(t *testing.T) {
+	for command, want := range map[string]bool{"start_server": true, "create_server": false} {
+		recordHetzner(t, map[string]string{
+			"GET /servers/7/actions": `{"actions": [{"id": 4, "command": "` + command + `", "status": "success", "progress": 100, "resources": []}]}`,
+		})
+
+		started, err := newHetznerAPI("token").ServerStarted(context.Background(), 7)
+
+		require.NoError(t, err)
+		assert.Equal(t, want, started, "a server whose finished action is %s", command)
+	}
 }

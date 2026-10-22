@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mitstack-eu/operator-kit/v2/contract"
+	"github.com/mitstack-eu/operator-kit/v3/contract"
 	"github.com/mitstack-eu/talos-cluster-kit/image"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
@@ -101,7 +101,7 @@ func gatewayParts(t *testing.T, data string) []string {
 func subscribedOnce(t *testing.T) *env {
 	t.Helper()
 	e := newEnv(t)
-	require.NoError(t, e.ensure())
+	require.NoError(t, e.converge())
 	return e
 }
 
@@ -192,7 +192,7 @@ func adminCertificate(t *testing.T, talosconfig string) *x509.Certificate {
 
 func TestInstall_KeepsTheClustersKeysOutOfTheOutputsAndTheStatus(t *testing.T) {
 	e := newEnv(t)
-	require.NoError(t, e.ensure())
+	require.NoError(t, e.converge())
 	builder := e.hetzner.byRole(t, roleBuilder)[0]
 	config := decodeCloudConfig(t, e.hetzner.userData[builder.ID]).file(t, builderConfigPath)
 	machine := testutil.Documents(t, []byte(config.Content))[0]
@@ -201,8 +201,9 @@ func TestInstall_KeepsTheClustersKeysOutOfTheOutputsAndTheStatus(t *testing.T) {
 		testutil.Field(t, machine, "machine", "ca", "key").(string),
 		testutil.Field(t, machine, "cluster", "token").(string),
 	}
+	e.hetzner.instantBuild = true
 	e.hetzner.powerOffBuilder(t)
-	require.NoError(t, e.ensure())
+	require.NoError(t, e.converge())
 	e.reports.report(e.now.Add(time.Minute), true)
 	e.now = e.now.Add(2 * time.Minute)
 
