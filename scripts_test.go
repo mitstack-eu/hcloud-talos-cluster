@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,12 +21,17 @@ import (
 
 const testImager = "ghcr.io/siderolabs/imager:v1.14.4@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-// buildFakes stand in for the builder's commands; docker run leaves one image in the out directory it mounts.
+// imagerPeakBytes is the most imager v1.14.4 held in /out building an hcloud image: its whole raw disk, before compressing it.
+const imagerPeakBytes = 4426580 * 1024
+
+// buildFakes stand in for the builder's commands. mount records each tmpfs and its size, and docker run fails as imager
+// does when /out lies on a tmpfs smaller than imagerPeakBytes, else leaves one image in the out directory it mounts.
 func buildFakes(imagerExit int) map[string]string {
 	exit := strconv.Itoa(imagerExit)
 	return map[string]string{
 		"ip":         "",
-		"mountpoint": "",
+		"mountpoint": "exit 1",
+		"mount":      `printf '%s %s\n' "${@: -1}" "${4#size=}" >> "$(dirname "$0")/tmpfs"`,
 		"sync":       "",
 		"zstd":       `cat "$2"`,
 		"dd":         `cat > "${BUILD_DISK}"`,
@@ -33,9 +39,27 @@ func buildFakes(imagerExit int) map[string]string {
   out=$(printf '%s\n' "$@" | sed -n 's#^\(.*\):/out$#\1#p')
   echo "every key of the cluster"
   [ ` + exit + ` -eq 0 ] || exit ` + exit + `
+  while read -r target size; do
+    case "$out/" in "$target"/*)
+      [ "$(numfmt --from=iec "${size^^}")" -ge ` + strconv.Itoa(imagerPeakBytes) + ` ] ||
+        { echo "write /out/hcloud-amd64.raw: no space left on device"; exit 7; } ;;
+    esac
+  done < <(cat "$(dirname "$0")/tmpfs" 2> /dev/null)
   printf 'talos image' > "$out/hcloud-amd64.raw.zst"
 fi`,
 	}
+}
+
+// tmpfsTargets are the directories the build mounted a tmpfs on.
+func (r scriptRun) tmpfsTargets(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(r.tools.Dir, "tmpfs"))
+	require.NoError(t, err, "the build mounted no tmpfs")
+	var targets []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		targets = append(targets, strings.Fields(line)[0])
+	}
+	return targets
 }
 
 // scriptRun is one run of a script: its output and exit error, its fakes' calls, and its scratch directory.
@@ -53,8 +77,9 @@ func runBuild(t *testing.T, imagerExit int) scriptRun {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "proc", "sys", "kernel"), 0o755))
 	config := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(config, []byte("machine: {token: secret}"), 0o600))
-	env := tools.Env("BUILD_WORK_DIR="+filepath.Join(dir, "work"), "BUILD_DISK="+filepath.Join(dir, "disk"),
-		"BUILD_RESOLV_CONF="+filepath.Join(dir, "resolv.conf"), "BUILD_PROC="+filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1")
+	env := tools.Env("BUILD_WORK_DIR="+filepath.Join(dir, "work"), "BUILD_OUT_DIR="+filepath.Join(dir, "out"),
+		"BUILD_DISK="+filepath.Join(dir, "disk"), "BUILD_RESOLV_CONF="+filepath.Join(dir, "resolv.conf"),
+		"BUILD_PROC="+filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1")
 	out, err := testutil.RunBash(t, buildImageScript, env, testImager, config, routerAddress)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
@@ -69,7 +94,7 @@ func TestBuildImage_RoutesThroughTheGatewayBuildsWritesTheDiskAndPowersOff(t *te
 	assert.Equal(t, "ip route replace default via "+routerAddress, calls[0])
 	assert.Equal(t, "docker pull --quiet "+testImager, calls[1])
 	assert.Contains(t, calls, "docker run --rm --privileged -v /dev:/dev -v "+filepath.Join(dir, "work")+"/in:/in:ro -v "+
-		filepath.Join(dir, "work")+"/out:/out "+testImager+" hcloud --arch amd64 --embedded-config-path /in/config.yaml")
+		filepath.Join(dir, "out")+":/out "+testImager+" hcloud --arch amd64 --embedded-config-path /in/config.yaml")
 	disk, _ := os.ReadFile(filepath.Join(dir, "disk"))
 	assert.Equal(t, "talos image", string(disk), "the disk holds the image")
 	sysrq, _ := os.ReadFile(filepath.Join(dir, "proc", "sysrq-trigger"))
@@ -78,6 +103,22 @@ func TestBuildImage_RoutesThroughTheGatewayBuildsWritesTheDiskAndPowersOff(t *te
 	assert.Equal(t, "nameserver 185.12.64.1\nnameserver 185.12.64.2\n", string(resolv))
 	assert.NoFileExists(t, filepath.Join(dir, "config.yaml"), "the configuration outlives the build")
 	assert.NotContains(t, run.out, "every key of the cluster", "imager's output reached the log")
+}
+
+func TestBuildImage_WritesTheDiskFromATmpfsNeverFromTheDiskItOverwrites(t *testing.T) {
+	run := runBuild(t, 0)
+
+	require.NoError(t, run.err, run.out)
+	var reads []string
+	for _, call := range run.tools.Calls(t) {
+		if strings.HasPrefix(call, "zstd ") {
+			reads = append(reads, strings.Fields(call)[2])
+		}
+	}
+	require.Len(t, reads, 1, "calls: %v", run.tools.Calls(t))
+	assert.True(t, slices.ContainsFunc(run.tmpfsTargets(t), func(target string) bool {
+		return strings.HasPrefix(reads[0], target+"/")
+	}), "dd writes the image read from %s, outside every tmpfs", reads[0])
 }
 
 func TestBuildImage_AFailedImagerWritesNothingAndKeepsTheBuilderRunning(t *testing.T) {
