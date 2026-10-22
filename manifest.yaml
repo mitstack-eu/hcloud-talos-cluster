@@ -21,13 +21,13 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.2.7
+  version: 0.2.8
   releaseClass: correctness-fix
   releaseNote: >-
-    The build progress and the image-build-failed refusal report the
-    builder's Hetzner CPU and disk metrics since its creation, and the
-    refusal adds when the disk last moved and the CPU was last busy, so a
-    build that stalls shows where it stopped.
+    The builder freezes its root filesystem before it writes the Talos
+    image, and copies of bash, zstd and dd in memory write the image and
+    power it off, so the power-off does not depend on what the page cache
+    holds of the disk being overwritten.
   description: >
     Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
     or hel1, booted from its own image with no user data, with Argo CD
