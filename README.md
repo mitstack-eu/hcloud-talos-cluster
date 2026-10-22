@@ -21,29 +21,46 @@ manages. [LICENSE](LICENSE) holds the full terms.
 
 ## What a subscribe builds
 
-A subscribe builds one control-plane node in the location the subscriber
-picks: `fsn1`, `nbg1` or `hel1`, with `nbg1` when none is given. Any other
-location is refused with a message naming the three, before any call to
-Hetzner. The node boots from the cluster's own disk image, which embeds the
-whole machine configuration, so the node carries no user data and has no
-public address.
+A subscribe builds three control-plane nodes, one in each of `fsn1`, `nbg1`
+and `hel1`, Hetzner Cloud's three European locations. The subscriber picks
+no location, and the block reads no `location` param, because every cluster
+spans all three. Etcd, the store that holds the cluster's state, keeps
+quorum while two of its three members are up. Each node boots from the cluster's own disk image, which embeds the
+whole machine configuration, so no node carries user data or holds a public
+address.
+
+The one gateway lives in `fsn1` and carries the network's only default route,
+so losing `fsn1` stops every node's outbound traffic.
 
 | Resource | What it does | Where |
 |---|---|---|
 | Network `10.0.0.0/16` | Holds every server and load balancer, and routes `0.0.0.0/0` to the gateway at `10.0.0.2` | `ensureNetwork` in `resource.go` |
 | Firewall | Holds no rule, and is applied to every server, so nothing reaches a server from the internet | `createFirewall` in `resource.go` |
-| Gateway | The only server with a public address. It runs the kit's cloud-config, which forwards and records the node's DNS, NTP and HTTPS and serves its image mirror. It is a `cx23`, or a `cpx22` when Hetzner reads `cx23` as sold out in the location | `install` and `orderableGatewayType` in `install.go` |
-| API load balancer | Carries the Kubernetes API on port 6443 at `10.0.0.3` on the private network, with no public interface | `apiLoadBalancer` and `loadBalancerStep` in `resource.go` |
-| Ingress load balancer | Serves ports 80 and 443 on its public address to the NodePorts 30080 and 30081, with PROXY protocol, and sits at `10.0.0.4` on the network | `ingressLoadBalancer` and `loadBalancerStep` in `resource.go` |
-| Builder | A short-lived server that builds the image with imager, writes it over its own disk and powers off. It freezes its root filesystem before the write, and copies of `bash`, `zstd` and `dd` in memory then write the image and power it off, so the script runs nothing from the disk being overwritten. Its user data carries the machine configuration gzipped, in cloud-init's `gz+b64` encoding, since as text it is over Hetzner's 32 KiB user data limit | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
+| Gateway | The only server with a public address, in `fsn1`. It runs the kit's cloud-config, which forwards and records the nodes' DNS, NTP and HTTPS and serves their image mirror. It is a `cx23`, or a `cpx22` when Hetzner reads `cx23` as sold out in `fsn1` | `install` and `orderableGatewayType` in `install.go` |
+| API load balancer, one per location | Carries the Kubernetes API on port 6443 on the private network, with no public interface | `apiLoadBalancer` and `loadBalancerStep` in `resource.go` |
+| Ingress load balancer, one per location | Serves ports 80 and 443 on its public address to the NodePorts 30080 and 30081, with PROXY protocol | `ingressLoadBalancer` and `loadBalancerStep` in `resource.go` |
+| Builder | A short-lived server in `fsn1` that builds the image with imager, writes it over its own disk and powers off. It freezes its root filesystem before the write, and copies of `bash`, `zstd` and `dd` in memory then write the image and power it off, so the script runs nothing from the disk being overwritten. Its user data carries the machine configuration gzipped, in cloud-init's `gz+b64` encoding, since as text it is over Hetzner's 32 KiB user data limit | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
 | Snapshot | The builder's disk, which every node boots from | `builderStep` in `resource.go` |
-| Node | The control-plane node, booted from the snapshot | `createNode` in `resource.go` |
+| Node, one per location | A control-plane node booted from the snapshot and named after its location, such as `shop-sub-0123-node-nbg1` | `missingNodeStep` and `createNode` in `resource.go` |
 | Cluster repository | A private GitHub repository, `<appName>-cluster`, that Argo CD syncs | `repository.go` |
 
-Both load balancers find their target by the label
-`mitstack.dev/role=node`, so a replaced node takes its place with no edit to
-either. Every Hetzner resource carries the labels `mitstack.dev/block` and
-`mitstack.dev/subscription`, and every verb finds the cluster by them alone.
+Each load balancer joins the network at a fixed address, so none takes the
+gateway's `10.0.0.2`. `clusterLocations` in `resource.go` holds the
+addresses:
+
+| Location | API load balancer | Ingress load balancer |
+|---|---|---|
+| `fsn1` | `10.0.0.3`, the control-plane endpoint | `10.0.0.4` |
+| `nbg1` | `10.0.0.5` | `10.0.0.6` |
+| `hel1` | `10.0.0.7` | `10.0.0.8` |
+
+The API server's certificate names all three API addresses. Every load
+balancer finds its targets by the label `mitstack.dev/role=node`, so it
+reaches the nodes of all three locations, and a replaced node takes its place
+with no edit to any load balancer. Every Hetzner resource carries the labels
+`mitstack.dev/block` and `mitstack.dev/subscription`, and every verb finds the
+cluster by them alone. A server's or load balancer's location is read from
+Hetzner's own record of it.
 
 ## How a subscribe proceeds
 
@@ -71,11 +88,12 @@ validate answers `pending` alone and the platform waits. `stepLeft` in
 `observe.go` makes that judgement from `nextStep` in `resource.go`, the same
 function a subscribe takes its step from. A run moves through these steps:
 
-1. Calls create the network, the repository and the firewall. Each load
-   balancer then takes its own calls: it is created bare, attached to the
-   network at its fixed address, and given its services and its target, and
-   the API one has its public interface disabled. Hetzner refuses either of
-   the last two on a load balancer with no network, so the attach comes first.
+1. Calls create the network, the repository and the firewall. Each of the
+   six load balancers then takes its own calls, location by location: it is
+   created bare, attached to the network at its fixed address, and given its
+   services and its target, and an API one has its public interface
+   disabled. Hetzner refuses either of the last two on a load balancer with
+   no network, so the attach comes first.
 2. One call mints the cluster's keys, renders the machine configuration with
    `nodeconfig.Render`, and creates the gateway and the builder, both
    stopped and off the network. It waits on the two creates together. The
@@ -100,15 +118,19 @@ function a subscribe takes its step from. A run moves through these steps:
    with a finished power-on in Hetzner's record of its actions, starts the
    snapshot of its disk and returns without waiting, since a snapshot can
    outlast a call. Once the snapshot reads available, one call deletes the
-   builder and the next creates the node from the snapshot.
-5. The gateway starts etcd, the store that holds the cluster's state, on the
-   node. The node keeps the address Hetzner's DHCP gives it and sends all
-   other traffic through the network's router at `10.0.0.1`, whose route
-   leads to the gateway. The gateway therefore finds the node among the
-   addresses its flow record holds. It then checks that the node's Talos
-   API, on port 50000, presents a certificate
-   signed by the cluster's own CA, so an address alone is never trusted. Last,
-   it runs talos-cluster-kit's etcd bootstrap once.
+   builder. Each of the next three calls creates the node of the first
+   location that has none, in the order `fsn1`, `nbg1`, `hel1`, so one call
+   never waits on more than one create.
+5. The gateway starts etcd on the first node it finds. Each node keeps the address Hetzner's DHCP gives it
+   and sends all other traffic through the network's router at `10.0.0.1`,
+   whose route leads to the gateway. The gateway therefore finds a node
+   among the addresses its flow record holds. It then checks that the node's
+   Talos API, on port 50000, presents a certificate signed by the cluster's
+   own CA, so an address alone is never trusted. Last, it runs
+   talos-cluster-kit's etcd bootstrap once, on that one node. Whether the
+   other two nodes then join etcd has not yet been shown by a live run, and
+   neither has whether Hetzner creates a node in `nbg1` or `hel1` from a
+   snapshot of a builder in `fsn1`.
 6. Inside the cluster, a Job calls the platform's enrolment route once. It
    presents the one-time enrolment token and receives two tokens: the report
    token, which authenticates the node report, and the repository token, a
@@ -125,11 +147,11 @@ copy in the gateway's user data stays readable on the gateway until it
 expires.
 
 The cluster reads present once every resource is in place and the newest node
-report since the node's creation reads every node Ready. Each step logs how
-long it took, as in this line from the tests:
+report since the last node's creation names at least three nodes, every one
+Ready. Each step logs how long it took, as in this line from the tests:
 
 ```text
-hcloud-talos-cluster: subscription sub_0123456789ab: the step to power on the gateway took 0s
+hcloud-talos-cluster: subscription sub_0123456789ab: the step to create the node in nbg1 from the snapshot took 0s
 ```
 
 A builder still running 30 minutes after its creation has failed, since its
@@ -138,12 +160,15 @@ ends the script before the power-off, so it also leaves the builder running.
 Validate then asks for a re-drive, and
 that subscribe deletes the builder and refuses with `image-build-failed`. A
 server Hetzner cannot place in the location fails the subscribe with
-`server-unavailable`, naming Hetzner's reason. So does a location that can
-order neither gateway type, before any server is created. An install whose create fails
-deletes the gateway and the builder, so the next call installs anew.
+`server-unavailable`, naming Hetzner's reason. So does an `fsn1` that can
+order neither gateway type, before any server is created. An install whose
+create fails deletes the gateway and the builder, so the next call installs
+anew. Two servers of one role in one location, such as two nodes in `nbg1`,
+make the cluster ambiguous, and every call refuses with `ambiguous-cluster`
+before it changes anything.
 
 The cluster's keys exist only in the call that mints them, the builder's user
-data and the snapshot. A cluster that loses its gateway while the node runs is
+data and the snapshot. A cluster that loses its gateway while its nodes run is
 therefore refused rather than rebuilt, since the gateway's certificate
 authority went with it. Unsubscribe deletes every server, load balancer,
 snapshot, firewall and network, then the repository when it carries the
@@ -197,13 +222,15 @@ cluster resource, `hetzner.kubernetes-cluster`, is the declared resource that
 provides the block's kind. It reads present only once a node report reads
 every node Ready, and a node reports only after it has enrolled. The cluster
 resource therefore carries the two values the enrolment route judges a node by
-while it still reads unknown, so the platform holds them before the node enrols.
+while it still reads unknown, so the platform holds them before any node enrols.
 
 | Output | While the cluster reads unknown | Once the cluster reads present |
 |---|---|---|
-| `enrolmentTokenSha256`, the base32 SHA-256 digest of the node's one-time enrolment token, read from the gateway's `mitstack.dev/enrolment-sha256` label | Once the gateway carries that label and the marked cluster repository exists | Yes |
+| `enrolmentTokenSha256`, the base32 SHA-256 digest of the nodes' one-time enrolment token, read from the gateway's `mitstack.dev/enrolment-sha256` label | Once the gateway carries that label and the marked cluster repository exists | Yes |
 | `clusterRepoUrl`, the web address of the cluster repository, such as `https://github.com/acme/shop-cluster` | Once the gateway carries that label and the marked cluster repository exists | Yes |
-| `privateEndpoint`, `publicIpByLocation` and `subscriptionId` | No | Yes |
+| `privateEndpoint`, the `fsn1` API load balancer as `https://10.0.0.3:6443` | No | Yes |
+| `publicIpByLocation`, each location's ingress address, such as `{"fsn1":"203.0.113.10","nbg1":"203.0.113.20","hel1":"203.0.113.30"}` | No | Yes |
+| `subscriptionId` | No | Yes |
 
 The cluster resource carries both enrolment outputs or neither, and no other
 resource carries either. It carries neither when the request cannot name the
@@ -212,7 +239,7 @@ neither when the repository does not exist or lacks the subscription's mark, or
 when the gateway has no digest label. Its status detail then names what is
 missing. In a subscribe the operator kit observes the resources in manifest
 order and stops at the first one not present, so it reaches the cluster
-resource once the node exists. A validate observes every resource.
+resource once all three nodes exist. A validate observes every resource.
 `clusterState.enrolment` in `observe.go` makes the outputs of a cluster not yet
 present, and `clusterState.present` makes those of a present one.
 
@@ -275,9 +302,9 @@ shellcheck scripts/*.sh
 
 | Test file | What it proves |
 |---|---|
-| `subscribe_test.go` | A one-node cluster in each of the three locations, the node with no user data, only the gateway with a public address, every refusal, the builder's metrics in the build progress and the `image-build-failed` refusal, and the cluster's enrolment outputs while it waits on its node report |
-| `redrive_test.go` | One subscribe reaching the node through the platform's re-drives, validate asking for one exactly when a subscribe has a step to take, at most one Hetzner action waited per call, and a doubled re-drive making nothing twice |
-| `userdata_test.go` | The builder's embedded configuration and the cluster's components, its user data within Hetzner's limit, and the gateway's two cloud-config parts, mirror and served manifests |
+| `subscribe_test.go` | A node in each of the three locations on one network, a load balancer pair in each at its fixed addresses, one public address per location, no node with user data, only the gateway with a public address, every refusal, the builder's metrics in the build progress and the `image-build-failed` refusal, and the cluster's enrolment outputs while it waits on its nodes' report |
+| `redrive_test.go` | One subscribe reaching all three nodes through the platform's re-drives, validate asking for one exactly when a subscribe has a step to take, at most one Hetzner action waited and one node created per call, and a doubled re-drive making nothing twice |
+| `userdata_test.go` | The builder's embedded configuration with every API address in its certificates and the cluster's components, its user data within Hetzner's limit, and the gateway's two cloud-config parts, mirror and served manifests |
 | `scripts_test.go` | The build, the first-node bootstrap and the cluster's credential calls |
 | `teardown_test.go` | Unsubscribe deletes every resource, the snapshot included |
 | `declared_resources_test.go`, `secrets_leak_test.go` | The operator kit's block guards and that no token reaches an answer or the logs |
