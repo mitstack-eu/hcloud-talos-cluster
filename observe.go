@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mitstack-eu/operator-kit/v2/contract"
-	"github.com/mitstack-eu/operator-kit/v2/handler"
+	"github.com/mitstack-eu/operator-kit/v3/contract"
+	"github.com/mitstack-eu/operator-kit/v3/handler"
 )
 
 // observers judge every declared resource by the labels and topics it carries, never by a recorded identity,
@@ -178,9 +178,32 @@ func observeCluster(ctx context.Context, d contract.Desired) (contract.Observati
 		}
 	}
 	if len(problems) > 0 {
-		return unknown(strings.Join(problems, "; ")), nil
+		obs := unknown(strings.Join(problems, "; "))
+		obs.Redrive, err = stepLeft(ctx, d, api, st, repo)
+		return obs, err
 	}
 	return st.present(d.SubscriptionID, repo.url), nil
+}
+
+// stepLeft reports whether a subscribe sent now would take a step or refuse, read from what Hetzner and GitHub hold, so
+// the engine re-drives subscribe once the step in flight has finished, and never while it runs. A request the subscribe
+// refuses before reading the cluster asks for none, since its own subscribe was refused already.
+func stepLeft(ctx context.Context, d contract.Desired, api hetznerAPI, st clusterState, repo repoObservation) (bool, error) {
+	req, err := readEnsureRequest(d)
+	if err != nil || repo.state == repoUnknown {
+		return false, nil
+	}
+	c := convergence{api: api, state: st, req: req, repo: repoRead{exists: repo.state != repoGone, marked: repo.state == repoPresent}}
+	network, ok := st.network()
+	if c.refusal() != nil || !ok || !c.repo.exists {
+		return true, nil
+	}
+	_, ok, err = nextStep(ctx, c, network)
+	var refused *handler.Refused
+	if errors.As(err, &refused) {
+		return true, nil
+	}
+	return ok, err
 }
 
 func (st clusterState) present(subID, repoURL string) contract.Observation {
@@ -219,10 +242,12 @@ func (st clusterState) problems() []string {
 		missing = append(missing, "no firewall carries this subscription's labels")
 	}
 	if builder, ok := st.server(roleBuilder); ok {
-		missing = append(missing, fmt.Sprintf("builder %d, created at %s, is building the cluster's image", builder.ID, builder.Created.UTC().Format(time.RFC3339)))
+		missing = append(missing, builder.buildDetail())
 	}
-	if _, ok := st.snapshot(); !ok {
+	if snap, ok := st.snapshot(); !ok {
 		missing = append(missing, "no snapshot of the cluster's image carries this subscription's labels")
+	} else if snap.Status != snapshotAvailable {
+		missing = append(missing, fmt.Sprintf("snapshot %d of the cluster's image is %s", snap.ID, snap.Status))
 	}
 	if firewallOK && firewall.RuleCount > 0 {
 		missing = append(missing, fmt.Sprintf("firewall %d holds %d rules, and the cluster's firewall holds none", firewall.ID, firewall.RuleCount))
@@ -236,12 +261,28 @@ func (st clusterState) problems() []string {
 	return missing
 }
 
+// buildDetail says where the builder stands, judged against buildDeadline as builderStep judges it.
+func (b hcServer) buildDetail() string {
+	created := b.Created.UTC().Format(time.RFC3339)
+	switch {
+	case b.Status != serverRunning:
+		return fmt.Sprintf("builder %d, created at %s, is %s", b.ID, created, b.Status)
+	case clock().Sub(b.Created) >= buildDeadline:
+		return fmt.Sprintf("builder %d, created at %s, did not power itself off within %s", b.ID, created, buildDeadline)
+	default:
+		return fmt.Sprintf("builder %d, created at %s, is building the cluster's image", b.ID, created)
+	}
+}
+
 func (st clusterState) gatewayProblems(network hcNetwork, firewall hcFirewall) []string {
 	gw, ok := st.server(roleGateway)
 	if !ok {
 		return []string{"no gateway carries this subscription's labels"}
 	}
 	var missing []string
+	if gw.Status != serverRunning {
+		missing = append(missing, fmt.Sprintf("gateway %d is %s", gw.ID, gw.Status))
+	}
 	if gw.PrivateIPs[network.ID] != gatewayAddress {
 		missing = append(missing, fmt.Sprintf("gateway %d is not on network %d at %s", gw.ID, network.ID, gatewayAddress))
 	}

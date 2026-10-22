@@ -39,8 +39,10 @@ type installation struct {
 	enrolmentDigest                  string
 }
 
-func (r *blockResource) install(ctx context.Context, c convergence, site clusterSite) error {
-	in, err := readInstallInputs(c.req, site, r.clock())
+// install creates both servers stopped and waits on their creates together, so the gateway joins the network before
+// its first boot, since its user data names its address, and the builder starts only once the gateway forwards.
+func install(ctx context.Context, c convergence, site clusterSite) error {
+	in, err := readInstallInputs(c.req, site, clock())
 	if err != nil {
 		return err
 	}
@@ -48,17 +50,19 @@ func (r *blockResource) install(ctx context.Context, c convergence, site cluster
 	if err != nil {
 		return err
 	}
-	if err := createServers(ctx, c, site, inst); err != nil {
-		return rollBackInstall(ctx, c, err)
-	}
-	return nil
-}
-
-func createServers(ctx context.Context, c convergence, site clusterSite, inst installation) error {
-	if err := createGateway(ctx, c, site, inst); err != nil {
-		return err
-	}
-	_, err := c.api.CreateServer(ctx, serverSpec{
+	gatewayLabels := ownerLabels(c.req.subID, roleGateway)
+	gatewayLabels[keyEnrolmentSHA256] = inst.enrolmentDigest
+	_, err = c.api.CreateServers(ctx, serverSpec{
+		Name:        resourceName(c.req.params.appName, c.req.subID, roleGateway),
+		ServerType:  gatewayServerType,
+		Location:    c.req.params.location,
+		Image:       gatewayImage,
+		UserData:    inst.gatewayUserData,
+		Labels:      gatewayLabels,
+		FirewallIDs: []int64{site.firewall.ID},
+		PublicIPv4:  true,
+		Stopped:     true,
+	}, serverSpec{
 		Name:        resourceName(c.req.params.appName, c.req.subID, roleBuilder),
 		ServerType:  c.req.params.serverType,
 		Location:    c.req.params.location,
@@ -67,9 +71,10 @@ func createServers(ctx context.Context, c convergence, site clusterSite, inst in
 		Labels:      ownerLabels(c.req.subID, roleBuilder),
 		NetworkIDs:  []int64{site.network.ID},
 		FirewallIDs: []int64{site.firewall.ID},
+		Stopped:     true,
 	})
 	if err != nil {
-		return fmt.Errorf("creating the image builder: %w", err)
+		return rollBackInstall(ctx, c, fmt.Errorf("creating the gateway and the image builder: %w", err))
 	}
 	return nil
 }
@@ -102,30 +107,6 @@ func readInstallInputs(req ensureRequest, site clusterSite, now time.Time) (inst
 		subID: req.subID, appName: req.params.appName, repo: req.gh.repo,
 		apiAddress: apiAddress, now: now,
 	}, nil
-}
-
-// createGateway attaches the gateway at its fixed address before its first boot, since its user data names that address.
-func createGateway(ctx context.Context, c convergence, site clusterSite, inst installation) error {
-	labels := ownerLabels(c.req.subID, roleGateway)
-	labels[keyEnrolmentSHA256] = inst.enrolmentDigest
-	gw, err := c.api.CreateServer(ctx, serverSpec{
-		Name:        resourceName(c.req.params.appName, c.req.subID, roleGateway),
-		ServerType:  gatewayServerType,
-		Location:    c.req.params.location,
-		Image:       gatewayImage,
-		UserData:    inst.gatewayUserData,
-		Labels:      labels,
-		FirewallIDs: []int64{site.firewall.ID},
-		PublicIPv4:  true,
-		Stopped:     true,
-	})
-	if err != nil {
-		return fmt.Errorf("creating the gateway: %w", err)
-	}
-	if err := c.api.AttachServerToNetwork(ctx, gw.ID, site.network.ID, gatewayAddress); err != nil {
-		return err
-	}
-	return c.api.PowerOnServer(ctx, gw.ID)
 }
 
 // renderInstallation mints the cluster's keys, the gateway's CA and the enrolment token, and renders both servers' user data.

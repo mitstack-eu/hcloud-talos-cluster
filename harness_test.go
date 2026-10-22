@@ -1,6 +1,7 @@
 package main
 
-// The shared fakes: Hetzner in memory behind hetznerAPI, GitHub over HTTP, and the platform's node reports.
+// The shared fakes: Hetzner in memory behind hetznerAPI, GitHub over HTTP, the platform's node reports, and the
+// platform's own settle check sending signed requests to the block's handler.
 
 import (
 	"context"
@@ -16,10 +17,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mitstack-eu/operator-kit/v2/contract"
-	"github.com/mitstack-eu/operator-kit/v2/events"
-	"github.com/mitstack-eu/operator-kit/v2/ghapi"
-	"github.com/mitstack-eu/operator-kit/v2/observe"
+	"github.com/mitstack-eu/operator-kit/v3/contract"
+	"github.com/mitstack-eu/operator-kit/v3/events"
+	"github.com/mitstack-eu/operator-kit/v3/ghapi"
+	"github.com/mitstack-eu/operator-kit/v3/handler"
+	"github.com/mitstack-eu/operator-kit/v3/kittest"
+	"github.com/mitstack-eu/operator-kit/v3/observe"
+	"github.com/mitstack-eu/operator-kit/v3/webhook"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,28 +52,20 @@ type fakeHetzner struct {
 	serverSpecs   []serverSpec
 	lbSpecs       []loadBalancerSpec
 	now           func() time.Time
-	// instantBuild powers each builder off as it is created, as if its build had finished at once.
+	// started and imaging hold when each server was powered on and each snapshot was started.
+	started, imaging map[int64]time.Time
+	// waits counts the calls the adapter waits on a Hetzner action for, and writes every call that changes something.
+	waits, writes int
+	// instantBuild powers each builder off as it is powered on, and images each snapshot as it starts.
 	instantBuild bool
 	// failNext, when set, fails the next server list with it.
 	failNext error
 	// failDelete, when set, fails the next server delete with it.
 	failDelete error
-	// failPowerOn, when set, fails the next power-on with it.
-	failPowerOn error
-	// lateLBAddress leaves a new load balancer's private address out of the create answer, as Hetzner may.
-	lateLBAddress bool
-	// lbAddressAfterReads leaves the address of a load balancer created on a network unassigned for this many reads.
-	lbAddressAfterReads int
-	pendingLBAddress    map[int64]pendingAddress
+	// failCreate, when set, fails the next server create of that role with it.
+	failCreate map[role]error
 	// failLBStep, when set, fails the next load balancer call of that name with it.
 	failLBStep map[string]error
-}
-
-// pendingAddress is a load balancer's address on a network, which Hetzner assigns once reads more reads have passed.
-type pendingAddress struct {
-	networkID int64
-	ip        string
-	reads     int
 }
 
 func newFakeHetzner(now func() time.Time) *fakeHetzner {
@@ -77,13 +73,21 @@ func newFakeHetzner(now func() time.Time) *fakeHetzner {
 		nextID: 1000, nextAddress: 5, now: now,
 		servers: map[int64]*hcServer{}, userData: map[int64]string{}, networks: map[int64]*hcNetwork{},
 		firewalls: map[int64]*hcFirewall{}, loadBalancers: map[int64]*hcLoadBalancer{}, snapshots: map[int64]*hcSnapshot{},
-		pendingLBAddress: map[int64]pendingAddress{}, failLBStep: map[string]error{},
+		started: map[int64]time.Time{}, imaging: map[int64]time.Time{}, failCreate: map[role]error{}, failLBStep: map[string]error{},
 	}
 }
 
 func (f *fakeHetzner) id() int64 {
 	f.nextID++
 	return f.nextID
+}
+
+// write counts a call that changes the project, and one the adapter waits on.
+func (f *fakeHetzner) write(waited bool) {
+	f.writes++
+	if waited {
+		f.waits++
+	}
 }
 
 // address hands out the subnet's next free address, as Hetzner does for a server attached at creation.
@@ -126,34 +130,53 @@ func (f *fakeHetzner) ListServers(_ context.Context, sel string) ([]hcServer, er
 // hetznerUserDataLimit is the most user data Hetzner's create-server reference accepts: "limited to 32KiB".
 const hetznerUserDataLimit = 32 * 1024
 
-func (f *fakeHetzner) CreateServer(_ context.Context, spec serverSpec) (hcServer, error) {
+func (f *fakeHetzner) CreateServers(_ context.Context, specs ...serverSpec) ([]hcServer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(spec.UserData) > hetznerUserDataLimit {
-		return hcServer{}, fmt.Errorf("creating server %s: invalid input in field 'user_data' (invalid_input)", spec.Name)
+	f.write(true)
+	var created []hcServer
+	for _, spec := range specs {
+		if err := f.failCreate[role(spec.Labels[keyRole])]; err != nil {
+			delete(f.failCreate, role(spec.Labels[keyRole]))
+			return created, err
+		}
+		if len(spec.UserData) > hetznerUserDataLimit {
+			return created, fmt.Errorf("creating server %s: invalid input in field 'user_data' (invalid_input)", spec.Name)
+		}
+		s := &hcServer{
+			ID: f.id(), Name: spec.Name, Location: spec.Location, ServerType: spec.ServerType, Status: serverRunning,
+			Labels: maps.Clone(spec.Labels), PrivateIPs: map[int64]string{}, FirewallIDs: slices.Clone(spec.FirewallIDs),
+			ImageID: spec.ImageID, Created: f.now(),
+		}
+		if spec.Stopped {
+			s.Status = serverOff
+		} else {
+			f.started[s.ID] = f.now()
+		}
+		if spec.PublicIPv4 {
+			s.PublicIPv4 = fmt.Sprintf("203.0.113.%d", s.ID%250)
+		}
+		for _, n := range spec.NetworkIDs {
+			s.PrivateIPs[n] = f.address()
+		}
+		f.servers[s.ID], f.userData[s.ID] = s, spec.UserData
+		f.serverSpecs = append(f.serverSpecs, spec)
+		created = append(created, *s)
 	}
-	s := &hcServer{
-		ID: f.id(), Name: spec.Name, Location: spec.Location, ServerType: spec.ServerType, Status: "running",
-		Labels: maps.Clone(spec.Labels), PrivateIPs: map[int64]string{}, FirewallIDs: slices.Clone(spec.FirewallIDs),
-		ImageID: spec.ImageID, Created: f.now(),
-	}
-	if spec.Stopped || (f.instantBuild && spec.Labels[keyRole] == string(roleBuilder)) {
-		s.Status = "off"
-	}
-	if spec.PublicIPv4 {
-		s.PublicIPv4 = fmt.Sprintf("203.0.113.%d", s.ID%250)
-	}
-	for _, n := range spec.NetworkIDs {
-		s.PrivateIPs[n] = f.address()
-	}
-	f.servers[s.ID], f.userData[s.ID] = s, spec.UserData
-	f.serverSpecs = append(f.serverSpecs, spec)
-	return *s, nil
+	return created, nil
+}
+
+func (f *fakeHetzner) ServerStarted(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.started[id]
+	return ok, nil
 }
 
 func (f *fakeHetzner) AttachServerToNetwork(_ context.Context, serverID, networkID int64, ip string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.write(true)
 	f.servers[serverID].PrivateIPs[networkID] = ip
 	return nil
 }
@@ -161,11 +184,12 @@ func (f *fakeHetzner) AttachServerToNetwork(_ context.Context, serverID, network
 func (f *fakeHetzner) PowerOnServer(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.failPowerOn; err != nil {
-		f.failPowerOn = nil
-		return err
+	f.write(true)
+	s := f.servers[id]
+	s.Status, f.started[id] = serverRunning, f.now()
+	if f.instantBuild && s.Labels[keyRole] == string(roleBuilder) {
+		s.Status = serverOff
 	}
-	f.servers[id].Status = "running"
 	return nil
 }
 
@@ -176,6 +200,7 @@ func (f *fakeHetzner) DeleteServer(_ context.Context, id int64) error {
 		f.failDelete = nil
 		return err
 	}
+	f.write(true)
 	delete(f.servers, id)
 	return nil
 }
@@ -189,6 +214,7 @@ func (f *fakeHetzner) ListNetworks(_ context.Context, sel string) ([]hcNetwork, 
 func (f *fakeHetzner) CreateNetwork(_ context.Context, spec networkSpec) (hcNetwork, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.write(false)
 	n := &hcNetwork{ID: f.id(), Name: spec.Name, IPRange: spec.IPRange, Labels: maps.Clone(spec.Labels), Routes: spec.Routes}
 	f.networks[n.ID] = n
 	return *n, nil
@@ -210,6 +236,7 @@ func (f *fakeHetzner) ListFirewalls(_ context.Context, sel string) ([]hcFirewall
 func (f *fakeHetzner) CreateFirewall(_ context.Context, spec firewallSpec) (hcFirewall, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.write(true)
 	fw := &hcFirewall{ID: f.id(), Name: spec.Name, Labels: maps.Clone(spec.Labels)}
 	f.firewalls[fw.ID] = fw
 	return *fw, nil
@@ -225,24 +252,13 @@ func (f *fakeHetzner) DeleteFirewall(_ context.Context, id int64) error {
 func (f *fakeHetzner) ListLoadBalancers(_ context.Context, sel string) ([]hcLoadBalancer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, id := range slices.Sorted(maps.Keys(f.pendingLBAddress)) {
-		if !matches(f.loadBalancers[id].Labels, sel) {
-			continue
-		}
-		p := f.pendingLBAddress[id]
-		if p.reads--; p.reads > 0 {
-			f.pendingLBAddress[id] = p
-			continue
-		}
-		f.loadBalancers[id].PrivateIPs[p.networkID] = p.ip
-		delete(f.pendingLBAddress, id)
-	}
 	return selected(f.loadBalancers, func(lb *hcLoadBalancer) map[string]string { return lb.Labels }, sel), nil
 }
 
 func (f *fakeHetzner) CreateLoadBalancer(_ context.Context, spec loadBalancerSpec) (hcLoadBalancer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.write(true)
 	lb := &hcLoadBalancer{
 		ID: f.id(), Name: spec.Name, Location: spec.Location, Labels: maps.Clone(spec.Labels), PublicInterface: spec.PublicInterface,
 		PrivateIPs: map[int64]string{}, Services: slices.Clone(spec.Services),
@@ -258,16 +274,7 @@ func (f *fakeHetzner) CreateLoadBalancer(_ context.Context, spec loadBalancerSpe
 	}
 	f.loadBalancers[lb.ID] = lb
 	f.lbSpecs = append(f.lbSpecs, spec)
-	if f.lbAddressAfterReads > 0 && spec.NetworkID != 0 {
-		f.pendingLBAddress[lb.ID] = pendingAddress{networkID: spec.NetworkID, ip: lb.PrivateIPs[spec.NetworkID], reads: f.lbAddressAfterReads}
-		lb.PrivateIPs = map[int64]string{}
-	}
-	answer := *lb
-	answer.PrivateIPs = maps.Clone(lb.PrivateIPs)
-	if f.lateLBAddress {
-		answer.PrivateIPs = map[int64]string{}
-	}
-	return answer, nil
+	return *lb, nil
 }
 
 // lbStep fails a load balancer call failLBStep names, once, and otherwise returns the load balancer it acts on.
@@ -280,13 +287,8 @@ func (f *fakeHetzner) lbStep(step string, id int64) (*hcLoadBalancer, error) {
 	if !ok {
 		return nil, fmt.Errorf("not_found: load balancer %d", id)
 	}
+	f.write(true)
 	return lb, nil
-}
-
-// attached reads a load balancer attached while Hetzner has not yet shown its address as attached all the same.
-func (f *fakeHetzner) attached(lb *hcLoadBalancer) bool {
-	_, pending := f.pendingLBAddress[lb.ID]
-	return len(lb.PrivateIPs) > 0 || pending
 }
 
 // AttachLoadBalancerToNetwork assigns the requested address once the attach action finishes, and refuses a second attach as Hetzner does.
@@ -297,7 +299,7 @@ func (f *fakeHetzner) AttachLoadBalancerToNetwork(_ context.Context, id, network
 	if err != nil {
 		return err
 	}
-	if f.attached(lb) {
+	if len(lb.PrivateIPs) > 0 {
 		return fmt.Errorf("load_balancer_already_attached: load balancer %d", id)
 	}
 	lb.PrivateIPs[networkID] = ip
@@ -311,7 +313,7 @@ func (f *fakeHetzner) DisableLoadBalancerPublicInterface(_ context.Context, id i
 	if err != nil {
 		return err
 	}
-	if !f.attached(lb) {
+	if len(lb.PrivateIPs) == 0 {
 		return fmt.Errorf("load_balancer_not_attached_to_network: load balancer %d", id)
 	}
 	lb.PublicInterface = false
@@ -341,7 +343,7 @@ func (f *fakeHetzner) AddLoadBalancerTarget(_ context.Context, id int64, labelSe
 	if err != nil {
 		return err
 	}
-	if !f.attached(lb) {
+	if len(lb.PrivateIPs) == 0 {
 		return fmt.Errorf("load_balancer_not_attached_to_network: load balancer %d", id)
 	}
 	if slices.Contains(lb.TargetSelectors, labelSelector) {
@@ -373,22 +375,66 @@ func (f *fakeHetzner) ListSnapshots(_ context.Context, sel string) ([]hcSnapshot
 	return selected(f.snapshots, func(s *hcSnapshot) map[string]string { return s.Labels }, sel), nil
 }
 
-func (f *fakeHetzner) CreateSnapshot(_ context.Context, serverID int64, spec snapshotSpec) (hcSnapshot, error) {
+func (f *fakeHetzner) StartSnapshot(_ context.Context, serverID int64, spec snapshotSpec) (hcSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.servers[serverID] == nil || f.servers[serverID].Status != "off" {
+	if f.servers[serverID] == nil || f.servers[serverID].Status != serverOff {
 		return hcSnapshot{}, fmt.Errorf("server %d is not powered off", serverID)
 	}
-	snap := &hcSnapshot{ID: f.id(), Description: spec.Description, Status: "available", Labels: maps.Clone(spec.Labels)}
-	f.snapshots[snap.ID] = snap
+	f.write(false)
+	snap := &hcSnapshot{ID: f.id(), Description: spec.Description, Status: "creating", Labels: maps.Clone(spec.Labels)}
+	if f.instantBuild {
+		snap.Status = snapshotAvailable
+	}
+	f.snapshots[snap.ID], f.imaging[snap.ID] = snap, f.now()
 	return *snap, nil
 }
 
 func (f *fakeHetzner) DeleteSnapshot(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.write(false)
 	delete(f.snapshots, id)
 	return nil
+}
+
+// advance plays what Hetzner and the builder finish on their own: a builder powers itself off build after its
+// power-on, unless build is zero, and a snapshot is available image after it started.
+func (f *fakeHetzner) advance(build, image time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, s := range f.servers {
+		if s.Labels[keyRole] == string(roleBuilder) && s.Status == serverRunning && build > 0 && !f.now().Before(f.started[id].Add(build)) {
+			s.Status = serverOff
+		}
+	}
+	for id, snap := range f.snapshots {
+		if !f.now().Before(f.imaging[id].Add(image)) {
+			snap.Status = snapshotAvailable
+		}
+	}
+}
+
+// resources is every resource but the builder, as text, so a later read shows any change to one made before.
+func (f *fakeHetzner) resources() map[int64]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[int64]string{}
+	for id, s := range f.servers {
+		if s.Labels[keyRole] != string(roleBuilder) {
+			out[id] = fmt.Sprintf("%+v", *s)
+		}
+	}
+	for id, n := range f.networks {
+		out[id] = fmt.Sprintf("%+v", *n)
+	}
+	for id, fw := range f.firewalls {
+		out[id] = fmt.Sprintf("%+v", *fw)
+	}
+	for id, lb := range f.loadBalancers {
+		out[id] = fmt.Sprintf("%+v", *lb)
+	}
+	return out
 }
 
 // byRole returns the servers carrying role r, as the subscription's selector finds them.
@@ -406,7 +452,7 @@ func (f *fakeHetzner) powerOffBuilder(t *testing.T) {
 	require.Len(t, builders, 1, "want one builder to power off")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.servers[builders[0].ID].Status = "off"
+	f.servers[builders[0].ID].Status = serverOff
 }
 
 func (f *fakeHetzner) specFor(t *testing.T, r role) serverSpec {
@@ -432,6 +478,7 @@ type fakeGitHub struct {
 	repos  map[string][]string
 	files  map[string]string
 	server *httptest.Server
+	writes int
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -445,6 +492,9 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 func (gh *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	gh.mu.Lock()
 	defer gh.mu.Unlock()
+	if r.Method != http.MethodGet {
+		gh.writes++
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/repos/")
 	switch {
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/orgs/"):
@@ -562,6 +612,9 @@ type env struct {
 	reports *fakeReports
 	now     time.Time
 	params  map[string]string
+	// buildTakes and imageTakes are how long the builder and the snapshot run once started; a zero build never ends.
+	buildTakes, imageTakes time.Duration
+	eng                    *engine
 }
 
 type envOption func(*env)
@@ -576,13 +629,16 @@ func withParam(key, value string) envOption {
 
 func newEnv(t *testing.T, opts ...envOption) *env {
 	t.Helper()
-	e := &env{t: t, now: testStart, reports: &fakeReports{}, params: map[string]string{"appName": testApp, "location": "nbg1"}}
-	e.block = &blockResource{now: func() time.Time { return e.now }}
+	e := &env{
+		t: t, now: testStart, reports: &fakeReports{}, params: map[string]string{"appName": testApp, "location": "nbg1"},
+		block: &blockResource{}, buildTakes: 10 * time.Minute, imageTakes: 3 * time.Minute,
+	}
 	e.hetzner = newFakeHetzner(func() time.Time { return e.now })
 	e.github = newFakeGitHub(t)
 	for _, opt := range opts {
 		opt(e)
 	}
+	swap(t, &clock, func() time.Time { return e.now })
 	swap(t, &newHetznerAPI, func(string) hetznerAPI { return e.hetzner })
 	swap(t, &newGitHubClient, func(_, token string) *ghapi.Client {
 		return ghapi.NewClient(e.github.server.URL, token, e.github.server.Client())
@@ -621,6 +677,28 @@ func (e *env) ensure() error {
 	return e.block.Ensure(e.ctx(), e.desired())
 }
 
+// changes counts every call that changed Hetzner or GitHub.
+func (e *env) changes() int {
+	e.hetzner.mu.Lock()
+	defer e.hetzner.mu.Unlock()
+	e.github.mu.Lock()
+	defer e.github.mu.Unlock()
+	return e.hetzner.writes + e.github.writes
+}
+
+// converge sends Ensure until one changes nothing, as the engine's re-drives would, and returns the first error.
+func (e *env) converge() error {
+	e.t.Helper()
+	for range 50 {
+		before := e.changes()
+		if err := e.ensure(); err != nil || e.changes() == before {
+			return err
+		}
+	}
+	e.t.Fatal("Ensure still changed the cluster after 50 calls")
+	return nil
+}
+
 func (e *env) observe() contract.Observation {
 	e.t.Helper()
 	obs, err := e.block.Observe(e.ctx(), e.desired())
@@ -628,18 +706,115 @@ func (e *env) observe() contract.Observation {
 	return obs
 }
 
-// subscribe runs every step a subscribe and its redrives take, the builder's power-off and the node's first report included.
+// progress plays what Hetzner, the builder and the node do on their own while the platform waits.
+func (e *env) progress() {
+	e.hetzner.advance(e.buildTakes, e.imageTakes)
+	if len(e.hetzner.byRole(e.t, roleNode)) == 1 && len(e.reports.reports) == 0 {
+		e.reports.report(e.now, true)
+	}
+}
+
+// building reports whether the builder runs its build, the long step the engine's re-drive resumes after.
+func (e *env) building() bool {
+	builders := e.hetzner.byRole(e.t, roleBuilder)
+	return len(builders) == 1 && builders[0].Status == serverRunning
+}
+
+// subscribe settles the subscription as the platform does and returns what Observe then reads.
 func (e *env) subscribe() contract.Observation {
 	e.t.Helper()
-	require.NoError(e.t, e.ensure(), "the first ensure")
-	e.now = e.now.Add(10 * time.Minute)
-	e.hetzner.powerOffBuilder(e.t)
-	require.NoError(e.t, e.ensure(), "the ensure after the build")
-	e.now = e.now.Add(5 * time.Minute)
-	e.reports.report(e.now, true)
+	final := e.engine().settle(nil)
+	require.Equal(e.t, http.StatusOK, final.status, "the settle's last answer: %s", final.detail)
 	return e.observe()
 }
 
 func (e *env) repo() string {
 	return testOwner + "/" + testApp + "-cluster"
+}
+
+// settleBudget is the manifest's spec.lifecycle.settleBudget.
+const settleBudget = 60 * time.Minute
+
+// engine plays the platform's lifecycle engine against the block's own handler, as signed requests.
+type engine struct {
+	e      *env
+	h      http.Handler
+	signer *kittest.Signer
+	seq    int
+	sleeps int
+	posted []answer
+}
+
+// answer is what one request to the handler answered, with how many Hetzner actions it waited on.
+type answer struct {
+	op               string
+	status           int
+	pending, redrive bool
+	detail           string
+	waits            int
+}
+
+func (a answer) err() error {
+	if a.status >= http.StatusBadRequest {
+		return fmt.Errorf("%s answered %d: %s", a.op, a.status, a.detail)
+	}
+	return nil
+}
+
+func (e *env) engine() *engine {
+	if e.eng != nil {
+		return e.eng
+	}
+	p := &engine{e: e, signer: kittest.NewSigner(e.t, "kid-hcloud-talos-cluster", 41)}
+	cfg := handlerConfig(p.signer.JWKSServer(e.t), nil)
+	cfg.Resource = e.block
+	cfg.Sleep = func(context.Context, time.Duration) { p.sleeps++ }
+	h, err := handler.New(cfg)
+	require.NoError(e.t, err)
+	p.h, e.eng = h, p
+	return p
+}
+
+func (p *engine) post(operation string) answer {
+	p.e.t.Helper()
+	p.seq++
+	body := hookBody(operation, p.e)
+	obo, err := webhook.MintOBO(p.signer.Private, p.signer.Kid,
+		webhook.OBOClaims{OrgID: body["orgId"].(string), SubscriptionID: testSub}, time.Hour, time.Now())
+	require.NoError(p.e.t, err)
+	body["obo"], body["idempotencyKey"] = obo, fmt.Sprintf("%s-%d", operation, p.seq)
+	waits := p.e.hetzner.waits
+	w := httptest.NewRecorder()
+	p.h.ServeHTTP(w, p.signer.HookRequest(p.e.t, "/hook", kittest.Envelope(fmt.Sprintf("nonce-%d", p.seq), time.Now(), body)))
+	var doc struct {
+		Pending, Redrive    bool
+		StatusDetail, Error string
+	}
+	require.NoError(p.e.t, json.Unmarshal(w.Body.Bytes(), &doc), "the %s answer", operation)
+	a := answer{op: operation, status: w.Code, pending: doc.Pending, redrive: doc.Redrive, detail: doc.StatusDetail + doc.Error, waits: p.e.hetzner.waits - waits}
+	p.posted = append(p.posted, a)
+	return a
+}
+
+// settle sends one subscribe, then the settle check's validates, parked 15 seconds doubling to two minutes, and a
+// re-driven subscribe whenever validate answers redrive. It returns the answer that settled the subscription, or the
+// last subscribe's once stop reads true.
+func (p *engine) settle(stop func() bool) answer {
+	last := p.post("subscribe")
+	for park, began := 15*time.Second, p.e.now; last.pending && last.err() == nil && p.e.now.Sub(began) < settleBudget; {
+		if stop != nil && stop() {
+			return last
+		}
+		p.e.now = p.e.now.Add(park)
+		park = min(2*park, 2*time.Minute)
+		p.e.progress()
+		v := p.post("validate")
+		if !v.pending || v.err() != nil {
+			return v
+		}
+		if v.redrive {
+			last, park = p.post("subscribe"), 15*time.Second
+		}
+	}
+	return last
 }

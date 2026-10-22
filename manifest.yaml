@@ -21,14 +21,14 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.1.2
-  releaseClass: correctness-fix
+  version: 0.2.0
+  releaseClass: feature
   releaseNote: >-
-    A subscribe no longer fails creating the image builder with Hetzner's
-    invalid user_data error, because the builder's machine configuration now
-    travels gzipped in its user data, which keeps it under Hetzner's 32 KiB
-    limit, and user data still over the limit fails the subscribe before any
-    server is created.
+    One subscribe now carries the cluster to its running node, because each
+    call takes one step that waits on Hetzner and validate asks the platform
+    to re-drive subscribe once that step has finished, and a builder still
+    running past its deadline now fails the subscription rather than leaving
+    it pending until its settle budget runs out.
   description: >
     Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
     or hel1, booted from its own image with no user data, with Argo CD

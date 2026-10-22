@@ -5,7 +5,7 @@ package main
 import (
 	"testing"
 
-	"github.com/mitstack-eu/operator-kit/v2/contract"
+	"github.com/mitstack-eu/operator-kit/v3/contract"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +24,7 @@ func TestUnsubscribeDeletes_EveryResourceItMadeTheSnapshotIncluded(t *testing.T)
 
 func TestUnsubscribe_MidBuildDeletesTheBuilderAndTheGateway(t *testing.T) {
 	e := newEnv(t)
-	require.NoError(t, e.ensure())
+	require.NoError(t, e.converge())
 
 	_, err := e.block.Delete(e.ctx(), e.desired())
 

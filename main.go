@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/mitstack-eu/operator-kit/v2/handler"
-	"github.com/mitstack-eu/operator-kit/v2/webhook"
+	"github.com/mitstack-eu/operator-kit/v3/handler"
+	"github.com/mitstack-eu/operator-kit/v3/webhook"
 )
 
 //go:embed manifest.yaml
@@ -22,14 +22,15 @@ const (
 	readHeaderTimeout = 10 * time.Second
 )
 
-// handlerConfig serves the block through its block-level handler, with one observer per declared resource.
+// handlerConfig observes each resource once per verb, since a call held open polling spends the platform's verb timeout.
 func handlerConfig(jwksURL string, logs *webhook.LogBuffer) handler.Config {
 	return handler.Config{
-		Resource:  &blockResource{},
-		Manifest:  manifestYAML,
-		Observers: observers(),
-		JWKSURL:   jwksURL,
-		Logs:      logs,
+		Resource:   &blockResource{},
+		Manifest:   manifestYAML,
+		Observers:  observers(),
+		JWKSURL:    jwksURL,
+		Logs:       logs,
+		VerbBudget: 1,
 	}
 }
 
