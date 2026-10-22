@@ -186,7 +186,8 @@ func observeCluster(ctx context.Context, d contract.Desired) (contract.Observati
 }
 
 // stepLeft reports whether a subscribe sent now would take a step or refuse, read from what Hetzner and GitHub hold, so
-// the engine re-drives subscribe once the step in flight has finished, and never while it runs.
+// the engine re-drives subscribe once the step in flight has finished, and never while it runs. A request the subscribe
+// refuses before reading the cluster asks for none, since its own subscribe was refused already.
 func stepLeft(ctx context.Context, d contract.Desired, api hetznerAPI, st clusterState, repo repoObservation) (bool, error) {
 	req, err := readEnsureRequest(d)
 	if err != nil || repo.state == repoUnknown {

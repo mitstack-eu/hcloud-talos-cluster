@@ -157,9 +157,9 @@ type convergence struct {
 	repo  repoRead
 }
 
-// Ensure takes one step that waits on Hetzner, since a call waiting on every action of the install outlasted the
-// platform's two-minute verb timeout, and refuses before any change a cluster it cannot act on unambiguously, or a
-// repository without the subscription's mark. The network and the repository need no wait, so they come first.
+// Ensure takes one step that waits on Hetzner, so each call ends well inside the platform's two-minute verb timeout, and
+// refuses before any change a cluster it cannot act on unambiguously, or a repository without the subscription's mark.
+// The network and the repository need no wait, so they come first.
 func (r *blockResource) Ensure(ctx context.Context, d contract.Desired) error {
 	req, err := readEnsureRequest(d)
 	if err != nil {
@@ -294,8 +294,10 @@ func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool,
 		}}, true, nil
 	case gw.Status == serverOff:
 		return step{"power on the gateway", func(ctx context.Context) error { return c.api.PowerOnServer(ctx, gw.ID) }}, true, nil
+	case imaged:
+		return step{"create the node from the snapshot", func(ctx context.Context) error { return createNode(ctx, c, site, snap) }}, true, nil
 	case hasSnapshot:
-		return step{"create the node from the snapshot", func(ctx context.Context) error { return createNode(ctx, c, site, snap) }}, imaged, nil
+		return step{}, false, nil
 	case hasBuilder:
 		return builderStep(ctx, c, builder)
 	default:
@@ -344,8 +346,11 @@ func builderStep(ctx context.Context, c convergence, builder hcServer) (step, bo
 		}}, true, nil
 	case serverOff:
 		started, err := c.api.ServerStarted(ctx, builder.ID)
-		if err != nil || !started {
-			return step{"power on the builder", func(ctx context.Context) error { return c.api.PowerOnServer(ctx, builder.ID) }}, err == nil, err
+		if err != nil {
+			return step{}, false, err
+		}
+		if !started {
+			return step{"power on the builder", func(ctx context.Context) error { return c.api.PowerOnServer(ctx, builder.ID) }}, true, nil
 		}
 		return step{"start the snapshot of the builder's disk", func(ctx context.Context) error {
 			_, err := c.api.StartSnapshot(ctx, builder.ID, snapshotSpec{
