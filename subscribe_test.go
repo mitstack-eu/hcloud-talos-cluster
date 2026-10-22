@@ -364,6 +364,7 @@ func TestSubscribe_TheClusterCarriesTheEnrolmentDigestAndTheClusterRepositoryWhi
 	assert.Contains(t, cluster.StatusDetail, "no node report", "the cluster's detail")
 	assert.Equal(t, want, cluster.Outputs, "the cluster's outputs while it waits on its node report")
 	require.NotNil(t, waiting.observed(resGateway), "the subscribe after the node exists did not observe the gateway")
+	assert.Equal(t, contract.Present, waiting.observed(resGateway).State, "the gateway's state")
 	assert.Empty(t, waiting.observed(resGateway).Outputs, "the gateway's outputs while the cluster waits on its node report")
 	require.False(t, final.pending, "the last answer: %s", final.detail)
 	assert.Empty(t, final.observed(resGateway).Outputs, "the gateway's outputs once the cluster is present")
