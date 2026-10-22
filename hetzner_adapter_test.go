@@ -180,3 +180,17 @@ func TestHetznerAdapter_AServerHasStartedOnceItsStartActionSucceeded(t *testing.
 		assert.Equal(t, want, started, "a server whose finished action is %s", command)
 	}
 }
+
+func TestHetznerAdapter_ReadsWhichServerTypesTheLocationCanOrder(t *testing.T) {
+	recordHetzner(t, map[string]string{
+		"GET /server_types": `{"server_types": [
+			{"id": 1, "name": "cx23", "locations": [{"id": 2, "name": "nbg1", "available": false}, {"id": 3, "name": "hel1", "available": true}]},
+			{"id": 4, "name": "cpx22", "locations": [{"id": 2, "name": "nbg1", "available": true}]},
+			{"id": 5, "name": "cpx52", "locations": [{"id": 3, "name": "hel1", "available": true}]}]}`,
+	})
+
+	names, err := newHetznerAPI("token").AvailableServerTypes(context.Background(), "nbg1")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"cpx22"}, names, "the types nbg1 can order")
+}
