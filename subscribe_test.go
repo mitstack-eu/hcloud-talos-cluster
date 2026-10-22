@@ -95,18 +95,6 @@ func TestSubscribe_FailsOnceTheBuilderStillRunsPastItsDeadline(t *testing.T) {
 	assert.Empty(t, e.hetzner.byRole(t, roleNode), "a node with no image")
 }
 
-// buildingBuilder settles a subscription until its builder runs a build that never ends.
-func (e *env) buildingBuilder() *engine {
-	e.t.Helper()
-	e.buildTakes = 0
-	p := e.engine()
-	p.settle(func() bool { return e.building() })
-	require.True(e.t, e.building(), "the builder never started its build")
-	return p
-}
-
-const mib = 1 << 20
-
 func TestValidate_TheBuildProgressCarriesTheBuildersCPUAndDiskFromItsCreation(t *testing.T) {
 	e := newEnv(t)
 	p := e.buildingBuilder()

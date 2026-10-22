@@ -804,6 +804,18 @@ func (e *env) building() bool {
 	return len(builders) == 1 && builders[0].Status == serverRunning
 }
 
+// buildingBuilder settles a subscription until its builder runs a build that never ends.
+func (e *env) buildingBuilder() *engine {
+	e.t.Helper()
+	e.buildTakes = 0
+	p := e.engine()
+	p.settle(func() bool { return e.building() })
+	require.True(e.t, e.building(), "the builder never started its build")
+	return p
+}
+
+const mib = 1 << 20
+
 // subscribe settles the subscription as the platform does and returns what Observe then reads.
 func (e *env) subscribe() contract.Observation {
 	e.t.Helper()
