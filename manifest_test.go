@@ -1,10 +1,11 @@
 package main
 
-// The manifest provides hetzner.kubernetes-cluster, an observer serves each resource it declares, and every server type is one the platform allows.
+// The manifest provides hetzner.kubernetes-cluster, an observer serves each resource it declares, every server type is one the platform allows, and its description fits the platform's bounds.
 
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mitstack-eu/operator-kit/v3/handler"
@@ -16,8 +17,9 @@ import (
 type parsedManifest struct {
 	Metadata struct{ ID string } `yaml:"metadata"`
 	Spec     struct {
-		Provides  []string `yaml:"provides"`
-		Resources []any    `yaml:"resources"`
+		Description string   `yaml:"description"`
+		Provides    []string `yaml:"provides"`
+		Resources   []any    `yaml:"resources"`
 	} `yaml:"spec"`
 }
 
@@ -104,4 +106,10 @@ func TestReadParams_EveryServerTypeTheBlockCreatesIsOneTheHetznerServerTypeAllow
 	for _, st := range slices.Concat(gatewayServerTypes, []string{defaultServerType}, allowedServerTypes) {
 		assert.Contains(t, allowed, st, "the block takes server type %s, which the platform refuses at subscribe", st)
 	}
+}
+
+func TestManifest_DescriptionFitsThePlatformsBounds(t *testing.T) {
+	description := strings.TrimSpace(parseManifest(t).Spec.Description)
+	assert.GreaterOrEqual(t, len(description), 10)
+	assert.LessOrEqual(t, len(description), 240, "the platform refuses a spec.description outside 10 to 240 characters")
 }
