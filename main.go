@@ -22,9 +22,7 @@ const (
 	readHeaderTimeout = 10 * time.Second
 )
 
-// handlerConfig serves the block through its block-level handler, with one observer per declared resource. A verb
-// observes each resource once and answers, since a call held open polling would spend the platform's verb timeout;
-// the settle check's validate and its re-drive carry the rest.
+// handlerConfig observes each resource once per verb, since a call held open polling spends the platform's verb timeout.
 func handlerConfig(jwksURL string, logs *webhook.LogBuffer) handler.Config {
 	return handler.Config{
 		Resource:   &blockResource{},

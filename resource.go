@@ -196,7 +196,6 @@ func readConvergence(ctx context.Context, api hetznerAPI, req ensureRequest) (co
 	return c, c.refusal()
 }
 
-// refusal names a cluster Ensure must not touch.
 func (c convergence) refusal() error {
 	if dups := c.state.duplicates(); len(dups) > 0 {
 		return handler.Refuse("ambiguous-cluster",
@@ -223,7 +222,6 @@ func (st clusterState) hasServers() bool {
 	return false
 }
 
-// step is one change to the cluster and the wait on Hetzner's actions for it.
 type step struct {
 	what string
 	run  func(ctx context.Context) error
