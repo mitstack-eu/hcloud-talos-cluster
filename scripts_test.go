@@ -109,7 +109,7 @@ func runBuild(t *testing.T, imagerExit int, extraEnv ...string) scriptRun {
 	for _, library := range fakeLibraries {
 		require.NoError(t, os.WriteFile(filepath.Join(tools.Dir, "lib", library), []byte(library), 0o644))
 	}
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "proc", "sys", "kernel"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "proc"), 0o755))
 	config := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(config, []byte("machine: {token: secret}"), 0o600))
 	env := tools.Env(append([]string{"BUILD_WORK_DIR=" + filepath.Join(dir, "work"), "BUILD_OUT_DIR=" + filepath.Join(dir, "out"),
@@ -159,9 +159,9 @@ func (r scriptRun) tmpfsAtFreeze(t *testing.T) []string {
 	return strings.Fields(string(data))
 }
 
-// ranAfterFreeze are the fakes on the disk that ran once the root filesystem froze.
-func (r scriptRun) ranAfterFreeze() string {
-	data, _ := os.ReadFile(filepath.Join(r.tools.Dir, "ran-after-freeze"))
+// recorded is what the fakes wrote to the named record, or nothing when none wrote to it.
+func (r scriptRun) recorded(name string) string {
+	data, _ := os.ReadFile(filepath.Join(r.tools.Dir, name))
 	return string(data)
 }
 
@@ -228,9 +228,8 @@ func TestBuildImage_FreezesTheRootThenOverwritesAndPowersOffFromTheTmpfsAlone(t 
 				"%s loads its libraries from %s, which held no copy of %s at the freeze", loaded.program, loaded.libraries, library)
 		}
 	}
-	locales, _ := os.ReadFile(filepath.Join(run.tools.Dir, "loader-locales"))
-	assert.Equal(t, "C\nC\nC\n", string(locales), "bash, zstd and dd do not all run in the C locale, which reads no locale file")
-	assert.Empty(t, run.ranAfterFreeze(), "programs on the disk ran after the freeze")
+	assert.Equal(t, "C\nC\nC\n", run.recorded("loader-locales"), "bash, zstd and dd do not all run in the C locale, which reads no locale file")
+	assert.Empty(t, run.recorded("ran-after-freeze"), "programs on the disk ran after the freeze")
 	assert.Contains(t, calls, "dd of="+filepath.Join(run.dir, "disk")+" bs=4M oflag=direct conv=fsync status=none")
 	assert.False(t, slices.ContainsFunc(calls, func(call string) bool { return strings.HasPrefix(call, "sync ") }),
 		"sync ran, which the freeze and conv=fsync make redundant: %v", calls)
