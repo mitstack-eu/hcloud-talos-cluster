@@ -244,7 +244,7 @@ func (s step) take(ctx context.Context, subID string) error {
 }
 
 // nextStep is the first step the cluster lacks, each in the order it depends on the one before, and none while only
-// Hetzner or the node can finish the work in flight.
+// Hetzner or the nodes can finish the work in flight.
 func nextStep(ctx context.Context, c convergence, network hcNetwork) (step, bool, error) {
 	firewall, ok := c.state.firewall()
 	if !ok {
@@ -283,7 +283,7 @@ func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool,
 	switch {
 	case hasNode && !hasGateway:
 		return step{}, false, handler.Refuse("gateway-lost",
-			"the node is running, but no gateway carries this subscription's labels, so the node cannot pull an image and nothing was changed; the gateway's certificate authority is gone with it, so unsubscribe and subscribe again to rebuild the cluster")
+			"the cluster's nodes are running, but no gateway carries this subscription's labels, so no node can pull an image and nothing was changed; the gateway's certificate authority is gone with it, so unsubscribe and subscribe again to rebuild the cluster")
 	case hasBuilder && (hasNode || imaged):
 		return step{"delete the builder, whose disk holds every key of the cluster, beside its snapshot", func(ctx context.Context) error {
 			return c.api.DeleteServer(ctx, builder.ID)

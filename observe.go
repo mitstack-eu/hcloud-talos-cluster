@@ -223,7 +223,7 @@ func stepLeft(ctx context.Context, d contract.Desired, api hetznerAPI, st cluste
 }
 
 // enrolment gives a cluster not yet present the values a node's enrolment is judged against, once the gateway carries
-// its digest and the marked repository exists, so the platform holds them before the node can report.
+// its digest and the marked repository exists, so the platform holds them before any node can report.
 func (st clusterState) enrolment(repo repoObservation) (map[string]string, string) {
 	gw, ok := st.server(roleGateway)
 	switch {
