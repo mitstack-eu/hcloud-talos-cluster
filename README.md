@@ -35,7 +35,7 @@ public address.
 | Gateway | The only server with a public address. It runs the kit's cloud-config, which forwards and records the node's DNS, NTP and HTTPS and serves its image mirror. It is a `cx23`, or a `cpx22` when Hetzner reads `cx23` as sold out in the location | `install` and `orderableGatewayType` in `install.go` |
 | API load balancer | Carries the Kubernetes API on port 6443 at `10.0.0.3` on the private network, with no public interface | `apiLoadBalancer` and `loadBalancerStep` in `resource.go` |
 | Ingress load balancer | Serves ports 80 and 443 on its public address to the NodePorts 30080 and 30081, with PROXY protocol, and sits at `10.0.0.4` on the network | `ingressLoadBalancer` and `loadBalancerStep` in `resource.go` |
-| Builder | A short-lived server that builds the image with imager, writes it over its own disk and powers off. Its user data carries the machine configuration gzipped, in cloud-init's `gz+b64` encoding, since as text it is over Hetzner's 32 KiB user data limit | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
+| Builder | A short-lived server that builds the image with imager, writes it over its own disk and powers off. It freezes its root filesystem before the write, and copies of `bash`, `zstd` and `dd` in memory then write the image and power it off, so the script runs nothing from the disk being overwritten. Its user data carries the machine configuration gzipped, in cloud-init's `gz+b64` encoding, since as text it is over Hetzner's 32 KiB user data limit | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
 | Snapshot | The builder's disk, which every node boots from | `builderStep` in `resource.go` |
 | Node | The control-plane node, booted from the snapshot | `createNode` in `resource.go` |
 | Cluster repository | A private GitHub repository, `<appName>-cluster`, that Argo CD syncs | `repository.go` |
@@ -89,7 +89,14 @@ function a subscribe takes its step from. A run moves through these steps:
    powers itself off. imager first writes the whole uncompressed disk, about
    4.2 GiB, into a directory on the builder's own disk. The builder then
    copies the compressed image, about 230 MB, into memory, because `dd`
-   writes the image over that same disk. A call that finds the builder off,
+   writes the image over that same disk. It also copies `bash`, `zstd`, `dd`,
+   the dynamic loader and the libraries `ldd` names for them into memory.
+   Then `fsfreeze -f /` flushes the root filesystem and blocks every later
+   write to it. The copy of `bash` runs `zstd` into `dd`, each through the
+   copied loader, and writes `o` to `/proc/sysrq-trigger` to power off. Once
+   the image starts landing, nothing the script runs reads a program from
+   the disk, and the script prints nothing. Other processes on the builder
+   still run from the disk. A call that finds the builder off,
    with a finished power-on in Hetzner's record of its actions, starts the
    snapshot of its disk and returns without waiting, since a snapshot can
    outlast a call. Once the snapshot reads available, one call deletes the
@@ -126,7 +133,9 @@ hcloud-talos-cluster: subscription sub_0123456789ab: the step to power on the ga
 ```
 
 A builder still running 30 minutes after its creation has failed, since its
-script leaves a failed build running. Validate then asks for a re-drive, and
+script leaves a failed build running. A failed `zstd` or `dd` after the freeze
+ends the script before the power-off, so it also leaves the builder running.
+Validate then asks for a re-drive, and
 that subscribe deletes the builder and refuses with `image-build-failed`. A
 server Hetzner cannot place in the location fails the subscribe with
 `server-unavailable`, naming Hetzner's reason. So does a location that can

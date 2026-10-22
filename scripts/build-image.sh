@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Builds the cluster's Talos disk image on the builder server with imager,
 # writes it over the builder's own disk and powers the builder off, so the
-# block can snapshot that disk for the node to boot from.
+# block can snapshot that disk for the node to boot from. It freezes the root
+# filesystem first and runs the overwrite from copies in a tmpfs, so once the
+# image starts landing, nothing it runs writes to or runs from that disk. A
+# failure in that overwrite ends it before the power-off.
 # Usage: build-image.sh <imager image by digest> <machine configuration> <network router>
 #   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
 #   BUILD_RESOLV_CONF and BUILD_PROC default to /mnt/mitstack-build,
@@ -19,6 +22,7 @@ readonly disk=${BUILD_DISK:-/dev/sda}
 readonly attempts=${BUILD_PULL_ATTEMPTS:-30}
 readonly resolv_conf=${BUILD_RESOLV_CONF:-/etc/resolv.conf}
 readonly proc=${BUILD_PROC:-/proc}
+readonly staged="$work/bin"
 readonly resolvers=("185.12.64.1" "185.12.64.2")
 
 fail() {
@@ -60,24 +64,49 @@ build() {
   rm -f "$work/in/config.yaml"
 }
 
-# write_disk reads the image from the tmpfs, since dd overwrites the disk that holds out, and syncs the removed out
-# before dd, so no writeback of it lands on the image.
+# stage copies a program, its libraries and its loader, as ldd resolves them on the builder, into the tmpfs.
+stage() {
+  local program name arrow library
+  program=$(command -v "$1")
+  cp -L "$program" "$staged/"
+  ldd "$program" | while read -r name arrow library _; do
+    if [ "$arrow" = "=>" ] && [ "$library" = "not" ]; then
+      fail "ldd could not resolve $name for $program"
+    elif [ "$arrow" = "=>" ] && [ "${library#/}" != "$library" ]; then
+      cp -L "$library" "$staged/"
+    elif [ "${name#/}" != "$name" ]; then
+      cp -L "$name" "$staged/ld.so"
+    fi
+  done
+}
+
+# overwrite_disk is the final stage, run by the tmpfs bash, and prints nothing, since a write to the frozen disk blocks.
+overwrite_disk() {
+  local staged=$1 image=$2 disk=$3 proc=$4
+  exec > /dev/null 2>&1
+  "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/zstd" -dc "$image" |
+    "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/dd" of="$disk" bs=4M oflag=direct conv=fsync status=none
+  printf o > "$proc/sysrq-trigger"
+}
+
+# write_disk freezes the root filesystem, which flushes the removed out, then execs the final stage from the tmpfs in
+# the C locale, which reads no locale file from the disk.
 write_disk() {
-  local images=("$out"/*.raw.zst)
+  local images=("$out"/*.raw.zst) program
   if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then
     fail "imager left no single image in $out"
   fi
   cp "${images[0]}" "$work/image.raw.zst"
   rm -rf "$out"
-  sync
-  zstd -dc "$work/image.raw.zst" | dd of="$disk" bs=4M oflag=direct status=none
-  sync
-}
-
-# power_off goes through sysrq, since the disk under the running system now holds the Talos image.
-power_off() {
-  echo 1 > "$proc/sys/kernel/sysrq"
-  echo o > "$proc/sysrq-trigger"
+  mkdir -p "$staged"
+  for program in bash zstd dd; do
+    stage "$program"
+  done
+  printf '%s\n' "set -euo pipefail" "$(declare -f overwrite_disk)" "overwrite_disk \"\$@\"" > "$staged/overwrite-disk"
+  echo "build-image: writing the image to $disk and powering off"
+  fsfreeze -f /
+  LC_ALL=C exec "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/bash" "$staged/overwrite-disk" \
+    "$staged" "$work/image.raw.zst" "$disk" "$proc"
 }
 
 main() {
@@ -86,8 +115,6 @@ main() {
   pull_imager "$1"
   build "$1" "$2"
   write_disk
-  echo "build-image: wrote the image to $disk"
-  power_off
 }
 
 main "$@"
