@@ -21,11 +21,13 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.2.4
+  version: 0.2.5
   releaseClass: correctness-fix
   releaseNote: >-
-    The gateway is created as a cpx22 when Hetzner has no cx23 to order in
-    the location, so a sold-out cx23 no longer stops every new cluster.
+    The gateway resource carries the enrolment digest and the cluster
+    repository as its outputs from its creation, so the platform holds what a
+    new node's enrolment is judged against while the cluster waits on that
+    node.
   description: >
     Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
     or hel1, booted from its own image with no user data, with Argo CD

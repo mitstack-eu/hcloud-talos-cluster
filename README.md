@@ -140,6 +140,31 @@ authority went with it. Unsubscribe deletes every server, load balancer,
 snapshot, firewall and network, then the repository when it carries the
 subscription's mark.
 
+## When each output is published
+
+Each subscribe and validate answer carries one outcome per declared resource,
+and the platform records each resource's outputs on that resource's row. The
+cluster's own outputs reach the subscription only once the cluster reads
+present, which needs a node report. A node reports only after it has enrolled,
+so the gateway resource carries the two values the enrolment route judges a
+node by from the first call that observes it.
+
+| Output | On the `gateway` resource | On the cluster |
+|---|---|---|
+| `enrolmentTokenSha256`, the base32 SHA-256 digest of the node's one-time enrolment token, read from the gateway's `mitstack.dev/enrolment-sha256` label | From the first observe after the gateway is created | Once the cluster reads present |
+| `clusterRepoUrl`, the web address of the cluster repository, such as `https://github.com/acme/shop-cluster` | From the first observe after the gateway is created | Once the cluster reads present |
+| `privateEndpoint`, `publicIpByLocation` and `subscriptionId` | Never | Once the cluster reads present |
+
+The gateway carries both of its outputs or neither. It carries neither when
+the request cannot name the cluster repository, such as when it has no GitHub
+owner, or when the gateway has no digest label, and its status detail then says
+why. The gateway names the repository from the GitHub owner and the app name
+alone, with no GitHub call. In a subscribe the operator kit observes the
+resources in manifest order and stops at the first one not present, so the
+repository has already read present in the same call. `gatewayObserver` in
+`observe.go` makes the gateway's outputs, and `clusterState.present` makes the
+cluster's.
+
 ## Where the tools image and the logs come from
 
 The node report, the enrolment Job and the token renewal run in the
@@ -169,7 +194,7 @@ shellcheck scripts/*.sh
 
 | Test file | What it proves |
 |---|---|
-| `subscribe_test.go` | A one-node cluster in each of the three locations, the node with no user data, only the gateway with a public address, and every refusal |
+| `subscribe_test.go` | A one-node cluster in each of the three locations, the node with no user data, only the gateway with a public address, every refusal, and the gateway's enrolment outputs while the cluster waits on its node |
 | `redrive_test.go` | One subscribe reaching the node through the platform's re-drives, validate asking for one exactly when a subscribe has a step to take, at most one Hetzner action waited per call, and a doubled re-drive making nothing twice |
 | `userdata_test.go` | The builder's embedded configuration, its user data within Hetzner's limit, and the gateway's two cloud-config parts |
 | `scripts_test.go` | The build, the first-node bootstrap and the cluster's credential calls |
