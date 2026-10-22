@@ -337,3 +337,45 @@ func TestSubscribe_RefusesBeforeAnyServerWhenNoGatewayTypeCanBeOrdered(t *testin
 	}
 	assert.Empty(t, e.hetzner.serverSpecs, "servers created with no gateway type to order")
 }
+
+func TestSubscribe_TheGatewayCarriesTheEnrolmentDigestAndTheClusterRepositoryWhileTheClusterWaitsOnItsNode(t *testing.T) {
+	e := newEnv(t)
+	p := e.engine()
+
+	first := p.post("subscribe")
+	p.settle(func() bool { return len(e.hetzner.byRole(t, roleGateway)) == 1 })
+	gateway := e.hetzner.byRole(t, roleGateway)[0]
+	waiting := p.post("subscribe")
+	final := p.settle(nil)
+
+	require.NotEmpty(t, gateway.Labels[keyEnrolmentSHA256], "the gateway's enrolment digest label")
+	want := map[string]string{
+		"enrolmentTokenSha256": gateway.Labels[keyEnrolmentSHA256],
+		"clusterRepoUrl":       "https://github.com/" + e.repo(),
+	}
+	assert.Nil(t, first.observed(resGateway), "the first subscribe, before the gateway exists, observed it")
+	require.True(t, waiting.pending, "a subscribe before the node exists: %s", waiting.detail)
+	require.NotNil(t, waiting.observed(resGateway), "the subscribe after the gateway exists did not observe it")
+	assert.Equal(t, contract.Present, waiting.observed(resGateway).State, "the gateway's state")
+	assert.Equal(t, want, waiting.observed(resGateway).Outputs, "the gateway's outputs while the cluster waits on its node")
+	require.False(t, final.pending, "the last answer: %s", final.detail)
+	assert.Equal(t, want, final.observed(resGateway).Outputs, "the gateway's outputs once the cluster is present")
+	for name, value := range want {
+		assert.Equal(t, value, final.outputs[name], "the cluster's provided output %s", name)
+	}
+}
+
+func TestObserve_AGatewayWhoseRepositoryCannotBeNamedCarriesNeitherOutputAndSaysWhy(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, e.converge())
+	require.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways")
+	d := e.desired()
+	delete(d.Secrets, "github")
+
+	obs, err := observers()[resGateway].ObserveResource(e.ctx(), contract.ResourceRef{Desired: d})
+
+	require.NoError(t, err)
+	assert.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
+	assert.Empty(t, obs.Outputs, "the gateway's outputs")
+	assert.Contains(t, obs.StatusDetail, "secrets.github.token is empty")
+}
