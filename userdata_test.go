@@ -178,10 +178,10 @@ func TestGateway_StartsTheMirrorBesideItsFirewallAndPassesPullsThroughIt(t *test
 
 	kit := decodeCloudConfig(t, gatewayParts(t, e.hetzner.userData[e.hetzner.byRole(t, roleGateway)[0].ID])[0])
 
+	assert.Contains(t, kit.file(t, "/etc/mitstack-gateway/Caddyfile").Content,
+		"  route /v2/* {\n    reverse_proxy @pull 127.0.0.1:5000\n    respond 405\n  }\n", "the mirror tries the registry for a pull before refusing")
 	assert.JSONEq(t, `{"iptables": false, "ip6tables": false, "bridge": "none"}`, kit.file(t, "/etc/docker/daemon.json").Content,
 		"Docker writes iptables rules the gateway's nftables deletes, so the mirror never starts")
-	assert.Contains(t, kit.file(t, "/etc/mitstack-gateway/Caddyfile").Content,
-		"  route /v2/* {\n    reverse_proxy @pull 127.0.0.1:5000\n    respond 405\n  }\n", "the mirror refuses a pull before trying the registry")
 }
 
 func TestBuilder_TheNodeRoutesThroughTheNetworksRouterAndKeepsItsDHCPAddress(t *testing.T) {
