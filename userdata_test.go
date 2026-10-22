@@ -9,7 +9,9 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"mime/multipart"
 	"net/mail"
@@ -19,6 +21,8 @@ import (
 	"time"
 
 	"github.com/mitstack-eu/operator-kit/v3/contract"
+	"github.com/mitstack-eu/talos-cluster-kit/components"
+	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/image"
 	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/mitstack-eu/talos-cluster-kit/tools"
@@ -194,6 +198,145 @@ func TestBuilder_TheNodeRoutesThroughTheNetworksRouterAndKeepsItsDHCPAddress(t *
 		"routes": []any{map[string]any{"gateway": routerAddress}}}}, testutil.Kind(docs, "LinkConfig"), "the node's default route")
 	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "DHCPv4Config", "name": "eth0"}}, testutil.Kind(docs, "DHCPv4Config"),
 		"the node's DHCP, which its LinkConfig would otherwise stop")
+}
+
+func builderConfiguration(t *testing.T, e *env) []map[string]any {
+	t.Helper()
+	config := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]).file(t, builderConfigPath)
+	return testutil.Documents(t, []byte(config.Content))
+}
+
+func inlineManifests(t *testing.T, config []map[string]any) map[string][]map[string]any {
+	t.Helper()
+	manifests := map[string][]map[string]any{}
+	for _, doc := range testutil.Kind(config, "KubeInlineManifestConfig") {
+		manifests[doc["name"].(string)] = testutil.Documents(t, []byte(doc["manifest"].(string)))
+	}
+	return manifests
+}
+
+func TestBuilder_TheClusterRunsKyvernoAndCloudNativePGFromManifestsTheGatewayServes(t *testing.T) {
+	e := subscribedOnce(t)
+
+	config := builderConfiguration(t, e)
+
+	served := map[string]any{}
+	for _, doc := range testutil.Kind(config, "KubeExternalManifestConfig") {
+		served[doc["name"].(string)] = doc["url"]
+	}
+	for _, name := range []string{"kyverno", "cloudnative-pg"} {
+		assert.Equal(t, "https://"+gatewayAddress+"/manifests/"+name+".yaml", served[name], "where the node fetches the %s manifest", name)
+	}
+}
+
+func TestBuilder_TheClusterAdmitsOnlyLabelledPodsIsolatesEachAppNamespaceAndAdmitsDatabaseSlices(t *testing.T) {
+	e := subscribedOnce(t)
+
+	manifests := inlineManifests(t, builderConfiguration(t, e))
+
+	for _, want := range []struct{ manifest, kind, name string }{
+		{"mitstack-require-app-label", "ValidatingPolicy", "mitstack-require-app-label"},
+		{"mitstack-generate-default-deny", "GeneratingPolicy", "mitstack-generate-default-deny"},
+		{"cloudnative-pg-namespace", "Namespace", "cnpg-system"},
+		{"mitstack-database-slices", "CiliumClusterwideNetworkPolicy", "mitstack-database-slices"},
+	} {
+		docs := testutil.Kind(manifests[want.manifest], want.kind)
+		if assert.Len(t, docs, 1, "%s documents in the inline manifest %s", want.kind, want.manifest) {
+			assert.Equal(t, want.name, testutil.Field(t, docs[0], "metadata", "name"), "the %s in %s", want.kind, want.manifest)
+		}
+	}
+}
+
+// podTemplates returns each workload's pod template in docs, keyed by the workload's namespace and name.
+func podTemplates(t *testing.T, docs []map[string]any) map[string]any {
+	t.Helper()
+	templates := map[string]any{}
+	for _, doc := range docs {
+		key := fmt.Sprintf("%v/%v", testutil.Field(t, doc, "metadata", "namespace"), testutil.Field(t, doc, "metadata", "name"))
+		switch doc["kind"] {
+		case "Job", "Deployment", "DaemonSet", "StatefulSet":
+			templates[key] = testutil.Field(t, doc, "spec", "template")
+		case "CronJob":
+			templates[key] = testutil.Field(t, doc, "spec", "jobTemplate", "spec", "template")
+		}
+	}
+	return templates
+}
+
+func TestBuilder_TheBlocksOwnPodsPassTheAppLabelPolicyAndKeepTheirEgress(t *testing.T) {
+	e := subscribedOnce(t)
+	manifests := inlineManifests(t, builderConfiguration(t, e))
+	labelPolicies := testutil.Kind(manifests["mitstack-require-app-label"], "ValidatingPolicy")
+	require.Len(t, labelPolicies, 1, "the app label policy")
+	var exempt []string
+	for _, expr := range testutil.Field(t, labelPolicies[0], "spec", "matchConstraints", "namespaceSelector", "matchExpressions").([]any) {
+		if m := expr.(map[string]any); m["key"] == "kubernetes.io/metadata.name" && m["operator"] == "NotIn" {
+			for _, ns := range m["values"].([]any) {
+				exempt = append(exempt, ns.(string))
+			}
+		}
+	}
+	denyPolicies := testutil.Kind(manifests["mitstack-generate-default-deny"], "GeneratingPolicy")
+	require.Len(t, denyPolicies, 1, "the default-deny policy")
+	denyCondition := testutil.Field(t, denyPolicies[0], "spec", "matchConditions", "0", "expression").(string)
+
+	templates := map[string]any{}
+	for _, name := range []string{"mitstack-node-report", "mitstack-cluster-tokens"} {
+		maps.Copy(templates, podTemplates(t, manifests[name]))
+	}
+
+	require.NotEmpty(t, templates, "the block's workloads")
+	for key, template := range templates {
+		namespace := strings.Split(key, "/")[0]
+		metadata, _ := template.(map[string]any)["metadata"].(map[string]any)
+		labels, _ := metadata["labels"].(map[string]any)
+		if labels["mitstack.dev/app"] == nil {
+			assert.Contains(t, exempt, namespace, "%s's pods carry no mitstack.dev/app label, so their namespace must be exempt", key)
+		}
+		assert.Contains(t, denyCondition, "'"+namespace+"'", "%s reaches the platform, so its namespace must get no default-deny", key)
+	}
+}
+
+func TestBuilder_TheNodeReportMayReadCloudNativePGsClustersDatabasesAndRoles(t *testing.T) {
+	e := subscribedOnce(t)
+
+	roles := testutil.Kind(inlineManifests(t, builderConfiguration(t, e))["mitstack-node-report"], "ClusterRole")
+
+	require.Len(t, roles, 1, "the node report's ClusterRoles")
+	assert.Contains(t, testutil.Field(t, roles[0], "rules"), map[string]any{
+		"apiGroups": []any{"postgresql.cnpg.io"},
+		"resources": []any{"clusters", "databases", "databaseroles"},
+		"verbs":     []any{"get", "list"},
+	}, "the node report's read of CloudNativePG's objects")
+}
+
+func TestGateway_MirrorsCloudNativePGAndKyvernoByDigestAndFetchesTheirManifestsFromTheKitRelease(t *testing.T) {
+	e := subscribedOnce(t)
+	release, err := kitRelease()
+	require.NoError(t, err)
+
+	kit := decodeCloudConfig(t, gatewayParts(t, e.hetzner.userData[e.hetzner.byRole(t, roleGateway)[0].ID])[0])
+
+	mirrored := map[string]string{}
+	for _, ref := range strings.Fields(kit.file(t, "/etc/mitstack-gateway/images.txt").Content) {
+		image, err := components.ParseImage(ref)
+		require.NoError(t, err, "the mirror's image list")
+		mirrored[image.Name] = image.Digest
+	}
+	for _, repo := range []string{
+		"ghcr.io/cloudnative-pg/cloudnative-pg", "ghcr.io/cloudnative-pg/postgresql",
+		"ghcr.io/kyverno/kyverno", "ghcr.io/kyverno/kyvernopre", "ghcr.io/kyverno/background-controller",
+	} {
+		assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, mirrored[repo], "the mirror's digest for %s", repo)
+	}
+	fetched := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(kit.file(t, "/etc/mitstack-gateway/manifests.txt").Content), "\n") {
+		fields := strings.Fields(line)
+		require.Len(t, fields, 3, "manifest line %q is <file> <sha256> <url>", line)
+		fetched[fields[0]] = fields[2]
+	}
+	assert.Equal(t, gateway.ReleaseURL(release)+"/components/kyverno/kyverno.yaml", fetched["kyverno.yaml"], "where the gateway fetches Kyverno")
+	assert.Equal(t, gateway.ReleaseURL(release)+"/components/cloudnative-pg/cloudnative-pg.yaml", fetched["cloudnative-pg.yaml"], "where the gateway fetches CloudNativePG")
 }
 
 func adminCertificate(t *testing.T, talosconfig string) *x509.Certificate {
