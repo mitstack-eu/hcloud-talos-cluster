@@ -19,12 +19,16 @@ import (
 )
 
 func TestSubscribe_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetworkWhateverLocationIsSent(t *testing.T) {
-	for name, opts := range map[string][]envOption{
-		"no location param": nil,
-		"location hel1":     {withLocation("hel1")},
-	} {
-		t.Run(name, func(t *testing.T) {
-			e := newEnv(t, opts...)
+	cases := []struct {
+		name string
+		opts []envOption
+	}{
+		{name: "a subscribe with no location param builds all three"},
+		{name: "a subscribe naming hel1 as its location builds all three", opts: []envOption{withLocation("hel1")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, tc.opts...)
 
 			obs := e.subscribe()
 

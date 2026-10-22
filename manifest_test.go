@@ -13,58 +13,65 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
-func TestManifest_ProvidesTheKubernetesClusterType(t *testing.T) {
-	var m struct {
-		Metadata struct{ ID string } `yaml:"metadata"`
-		Spec     struct {
-			Provides  []string `yaml:"provides"`
-			Resources []any    `yaml:"resources"`
-		} `yaml:"spec"`
-	}
+type parsedManifest struct {
+	Metadata struct{ ID string } `yaml:"metadata"`
+	Spec     struct {
+		Provides  []string `yaml:"provides"`
+		Resources []any    `yaml:"resources"`
+	} `yaml:"spec"`
+}
 
-	require.NoError(t, yaml.Unmarshal(manifestYAML, &m))
-
-	assert.Equal(t, blockID, m.Metadata.ID)
-	assert.Equal(t, []string{"hetzner.kubernetes-cluster"}, m.Spec.Provides)
-	var names []string
+// declaredTypes maps each declared resource's name to its type; a resource declared by its type alone is named by it.
+func (m parsedManifest) declaredTypes() map[string]string {
+	declared := map[string]string{}
 	for _, r := range m.Spec.Resources {
 		switch v := r.(type) {
 		case string:
-			names = append(names, v)
+			declared[v] = v
 		case map[string]any:
-			names = append(names, v["name"].(string))
+			declared[v["name"].(string)] = v["type"].(string)
 		}
 	}
-	observed := observers()
-	for _, name := range names {
+	return declared
+}
+
+func parseManifest(t *testing.T) parsedManifest {
+	t.Helper()
+	var m parsedManifest
+	require.NoError(t, yaml.Unmarshal(manifestYAML, &m))
+	return m
+}
+
+func TestManifest_ProvidesTheKubernetesClusterType(t *testing.T) {
+	m := parseManifest(t)
+
+	declared, observed := m.declaredTypes(), observers()
+
+	assert.Equal(t, blockID, m.Metadata.ID)
+	assert.Equal(t, []string{"hetzner.kubernetes-cluster"}, m.Spec.Provides)
+	for name := range declared {
 		assert.Contains(t, observed, name, "the declared resource %s has no observer", name)
 	}
 	for name := range observed {
-		assert.True(t, slices.Contains(names, name), "the observer %s serves no declared resource", name)
+		assert.Contains(t, declared, name, "the observer %s serves no declared resource", name)
 	}
 }
 
 func TestManifest_DeclaresANodeAndAPublicAndAPrivateLoadBalancerInEachLocation(t *testing.T) {
-	var m struct {
-		Spec struct {
-			Resources []any `yaml:"resources"`
-		} `yaml:"spec"`
+	want := map[string]string{
+		"hetzner.network": "hetzner.network", "hetzner.firewall": "hetzner.firewall", "gateway": "hetzner.server",
+		"github.repository": "github.gitops-repository", "github.gitops-commit": "github.gitops-commit",
+		"hetzner.kubernetes-cluster": "hetzner.kubernetes-cluster",
 	}
-	require.NoError(t, yaml.Unmarshal(manifestYAML, &m))
-	declared := map[string]string{}
-	for _, r := range m.Spec.Resources {
-		if v, ok := r.(map[string]any); ok {
-			declared[v["name"].(string)] = v["type"].(string)
-		}
-	}
-
-	want := map[string]string{"gateway": "hetzner.server", "github.repository": "github.gitops-repository"}
 	for _, location := range clusterLocationNames {
 		want["node-"+location] = "hetzner.server"
 		want["api-load-balancer-"+location] = "hetzner.load-balancer"
 		want["ingress-load-balancer-"+location] = "hetzner.load-balancer"
 	}
-	assert.Equal(t, want, declared, "the named resources and their types")
+
+	declared := parseManifest(t).declaredTypes()
+
+	assert.Equal(t, want, declared, "the declared resources and their types")
 }
 
 func TestHandler_BuildsFromTheManifestAndObservers(t *testing.T) {
