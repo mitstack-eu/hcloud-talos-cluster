@@ -108,7 +108,7 @@ func blockUnderTest(t *testing.T) kittest.Block {
 	t.Helper()
 	e := newEnv(t)
 	e.hetzner.instantBuild = true
-	e.reports.report(testStart.Add(time.Hour), true)
+	e.reports.report(testStart.Add(time.Hour), true, true, true)
 	snap, err := contract.ParseTypeSnapshot(typeSnapshotJSON)
 	require.NoError(t, err)
 	d := e.desired()

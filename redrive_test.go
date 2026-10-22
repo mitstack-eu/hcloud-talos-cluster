@@ -1,6 +1,6 @@
 package main
 
-// One subscribe reaches the running node through the engine's re-drives, each call waiting on one Hetzner action at most.
+// One subscribe reaches the three running nodes through the engine's re-drives, each call waiting on one Hetzner action at most.
 
 import (
 	"errors"
@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSubscribe_OneSubscribeCarriesTheClusterToItsNodeThroughTheEnginesRedrives(t *testing.T) {
+func TestSubscribe_OneSubscribeCarriesTheClusterToItsThreeNodesThroughTheEnginesRedrives(t *testing.T) {
 	e := newEnv(t)
 	p := e.engine()
 
@@ -23,7 +23,7 @@ func TestSubscribe_OneSubscribeCarriesTheClusterToItsNodeThroughTheEnginesRedriv
 
 	require.Equal(t, http.StatusOK, final.status, "the last answer: %s", final.detail)
 	require.False(t, final.pending, "the last answer: %s", final.detail)
-	assert.Len(t, e.hetzner.byRole(t, roleNode), 1, "nodes")
+	assert.Len(t, e.hetzner.byRole(t, roleNode), 3, "nodes")
 	assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways")
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "a builder outlived its snapshot")
 	var subscribes int
@@ -46,6 +46,17 @@ func TestSubscribe_EachCallWaitsOnOneHetznerActionAtMostAndHoldsNoPoll(t *testin
 		assert.LessOrEqual(t, a.waits, 1, "the %s answering %q waited on %d Hetzner actions", a.op, a.detail, a.waits)
 	}
 	assert.Zero(t, p.sleeps, "the handler slept inside a call, holding it open")
+}
+
+func TestSubscribe_EachCallCreatesOneNodeAtMost(t *testing.T) {
+	e := newEnv(t)
+
+	e.engine().settle(nil)
+
+	require.Len(t, e.hetzner.byRole(t, roleNode), 3, "nodes")
+	for i, nodes := range e.hetzner.nodesPerCreate {
+		assert.LessOrEqual(t, nodes, 1, "server create %d made %d nodes", i, nodes)
+	}
 }
 
 func TestValidate_AsksForARedriveExactlyWhenASubscribeWouldTakeAStep(t *testing.T) {
@@ -77,13 +88,13 @@ func TestSubscribe_ARedriveSentTwiceAtEachSignalMakesEveryResourceOnce(t *testin
 		}
 	}
 
-	assert.Len(t, e.hetzner.byRole(t, roleNode), 1, "nodes")
+	assert.Len(t, e.hetzner.byRole(t, roleNode), 3, "nodes")
 	assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways")
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "builders")
 	snaps, err := e.hetzner.ListSnapshots(e.ctx(), subscriptionSelector(testSub))
 	require.NoError(t, err)
 	assert.Len(t, snaps, 1, "snapshots")
-	assert.Equal(t, 7, e.hetzner.count(), "two servers, two load balancers, a network, a firewall and a snapshot")
+	assert.Equal(t, 13, e.hetzner.count(), "four servers, six load balancers, a network, a firewall and a snapshot")
 }
 
 func TestVerbSemantics_ARedrivenSubscribeResumesTheBuildAndChangesNothingMadeBefore(t *testing.T) {

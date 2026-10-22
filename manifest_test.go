@@ -44,6 +44,29 @@ func TestManifest_ProvidesTheKubernetesClusterType(t *testing.T) {
 	}
 }
 
+func TestManifest_DeclaresANodeAndAPublicAndAPrivateLoadBalancerInEachLocation(t *testing.T) {
+	var m struct {
+		Spec struct {
+			Resources []any `yaml:"resources"`
+		} `yaml:"spec"`
+	}
+	require.NoError(t, yaml.Unmarshal(manifestYAML, &m))
+	declared := map[string]string{}
+	for _, r := range m.Spec.Resources {
+		if v, ok := r.(map[string]any); ok {
+			declared[v["name"].(string)] = v["type"].(string)
+		}
+	}
+
+	want := map[string]string{"gateway": "hetzner.server", "github.repository": "github.gitops-repository"}
+	for _, location := range clusterLocationNames {
+		want["node-"+location] = "hetzner.server"
+		want["api-load-balancer-"+location] = "hetzner.load-balancer"
+		want["ingress-load-balancer-"+location] = "hetzner.load-balancer"
+	}
+	assert.Equal(t, want, declared, "the named resources and their types")
+}
+
 func TestHandler_BuildsFromTheManifestAndObservers(t *testing.T) {
 	_, err := handler.New(handlerConfig("https://api.mitstack.test/.well-known/jwks.json", nil))
 

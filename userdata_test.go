@@ -13,7 +13,6 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/mail"
-	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -142,8 +141,28 @@ func TestBuilder_EmbedsAConfigurationThatCarriesTheReportTheCredentialsAndTheApp
 	require.NoError(t, err)
 	require.Len(t, networks, 1)
 	endpoint := testutil.Field(t, clusterDocs[0], "endpoint")
-	assert.Equal(t, "https://"+e.hetzner.loadBalancer(t, roleAPI).PrivateIPs[networks[0].ID]+":6443", endpoint, "the control-plane endpoint")
+	assert.Equal(t, "https://"+e.hetzner.lbsByLocation(t, roleAPI)["fsn1"].PrivateIPs[networks[0].ID]+":6443", endpoint, "the control-plane endpoint")
 	assert.Equal(t, []string{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress}, c.RunCmd[0], "the build command")
+}
+
+func TestBuilder_TheAPIServersCertificateNamesThePrivateLoadBalancerOfEveryLocation(t *testing.T) {
+	e := subscribedOnce(t)
+	config := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]).file(t, builderConfigPath)
+	networks, err := e.hetzner.ListNetworks(e.ctx(), subscriptionSelector(testSub))
+	require.NoError(t, err)
+	require.Len(t, networks, 1)
+	lbs := e.hetzner.lbsByLocation(t, roleAPI)
+	var want []any
+	for _, location := range clusterLocationNames {
+		want = append(want, lbs[location].PrivateIPs[networks[0].ID])
+	}
+
+	docs := testutil.Documents(t, []byte(config.Content))
+
+	assert.Equal(t, want, testutil.Field(t, docs[0], "machine", "certSANs"), "the Talos API's certificate names")
+	apiServer := testutil.Kind(docs, "KubeAPIServerConfig")
+	require.Len(t, apiServer, 1, "KubeAPIServerConfig documents")
+	assert.Equal(t, want, testutil.Field(t, apiServer[0], "certExtraSANs"), "the Kubernetes API's certificate names")
 }
 
 func TestBuilder_TheApplicationSyncsTheClusterRepositoryAndTheEnrolmentNamesThePlatform(t *testing.T) {
@@ -377,7 +396,7 @@ func TestInstall_KeepsTheClustersKeysOutOfTheOutputsAndTheStatus(t *testing.T) {
 	e.hetzner.instantBuild = true
 	e.hetzner.powerOffBuilder(t)
 	require.NoError(t, e.converge())
-	e.reports.report(e.now.Add(time.Minute), true)
+	e.reports.report(e.now.Add(time.Minute), true, true, true)
 	e.now = e.now.Add(2 * time.Minute)
 
 	obs := e.observe()
@@ -392,12 +411,8 @@ func TestInstall_KeepsTheClustersKeysOutOfTheOutputsAndTheStatus(t *testing.T) {
 }
 
 func TestBuilder_UserDataIsOneCloudConfigDocumentWithinHetznersLimit(t *testing.T) {
-	inst, err := renderInstallation(installInputs{
-		subID: testSub, appName: testApp, repo: repoFor(testOwner, testApp),
-		apiAddress: netip.MustParseAddr("10.0.0.3"), now: testStart,
-	})
-	require.NoError(t, err)
-	data := inst.builderUserData
+	e := subscribedOnce(t)
+	data := e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]
 
 	decoder := yaml.NewDecoder(strings.NewReader(data))
 	var docs []map[string]any
