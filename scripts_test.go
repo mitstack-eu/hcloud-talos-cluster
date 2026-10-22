@@ -24,8 +24,14 @@ const testImager = "ghcr.io/siderolabs/imager:v1.14.4@sha256:0123456789abcdef012
 // imagerPeakBytes is the most imager v1.14.4 held in /out building an hcloud image: its whole raw disk, before compressing it.
 const imagerPeakBytes = 4426580 * 1024
 
+// fakeLoader is the dynamic loader fake ldd names for every program, and fakeLibraries the libraries it names.
+const fakeLoader = "ld-linux-x86-64.so.2"
+
+var fakeLibraries = []string{"libtinfo.so.6", "liblzma.so.5", "libc.so.6"}
+
 // buildFakes stand in for the builder's commands, mount recording each tmpfs and docker run failing as imager does when
-// /out lies on a tmpfs smaller than imagerPeakBytes.
+// /out lies on a tmpfs smaller than imagerPeakBytes. fsfreeze lists the build tmpfs and turns every fake left on the
+// disk into one that records it ran, the loader records the LC_ALL it runs in, and FAKE_FAILING names a fake that fails.
 func buildFakes(imagerExit int) map[string]string {
 	exit := strconv.Itoa(imagerExit)
 	return map[string]string{
@@ -33,8 +39,33 @@ func buildFakes(imagerExit int) map[string]string {
 		"mountpoint": "exit 1",
 		"mount":      `printf '%s %s\n' "${@: -1}" "${4#size=}" >> "$(dirname "$0")/tmpfs"`,
 		"sync":       "",
-		"zstd":       `cat "$2"`,
-		"dd":         `cat > "${BUILD_DISK}"`,
+		"fsfreeze": `find "$BUILD_WORK_DIR" -type f > "$HOME/tmpfs-at-freeze"
+for fake in "$HOME"/*; do
+  if [ -f "$fake" ] && [ -x "$fake" ] && [ "$fake" != "$0" ]; then
+    printf '#!/bin/sh\necho "$0" >> "$HOME/ran-after-freeze"\nexit 1\n' > "$fake"
+  fi
+done`,
+		"ldd": `printf '\tlinux-vdso.so.1 (0x00007ffcc3563000)\n'
+case ${1##*/} in
+  bash) printf '\tlibtinfo.so.6 => %s/lib/libtinfo.so.6 (0x00007f87e5459000)\n' "$HOME" ;;
+  zstd) printf '\tliblzma.so.5 => %s/lib/liblzma.so.5 (0x00007f87e5254000)\n' "$HOME" ;;
+esac
+printf '\tlibc.so.6 => %s/lib/libc.so.6 (0x00007f87e4e92000)\n\t%s/` + fakeLoader + ` (0x00005574bf12e000)\n' "$HOME" "$HOME"`,
+		fakeLoader: `printf '%s\n' "${LC_ALL-unset}" >> "$HOME/loader-locales"
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --library-path) shift 2 ;;
+    --*) shift ;;
+    *) break ;;
+  esac
+done
+exec "$@"`,
+		"zstd": `echo "zstd: a diagnostic on stderr" >&2
+[ "${FAKE_FAILING:-}" != zstd ] || exit 1
+cat "$2"`,
+		"dd": `echo "dd: a diagnostic on stderr" >&2
+[ "${FAKE_FAILING:-}" != dd ] || exit 1
+cat > "${BUILD_DISK}"`,
 		"docker": `if [ "$1" = run ]; then
   out=$(printf '%s\n' "$@" | sed -n 's#^\(.*\):/out$#\1#p')
   echo "every key of the cluster"
@@ -70,18 +101,68 @@ type scriptRun struct {
 	dir   string
 }
 
-func runBuild(t *testing.T, imagerExit int) scriptRun {
+func runBuild(t *testing.T, imagerExit int, extraEnv ...string) scriptRun {
 	t.Helper()
 	dir := t.TempDir()
 	tools := testutil.NewTools(t, buildFakes(imagerExit))
+	require.NoError(t, os.MkdirAll(filepath.Join(tools.Dir, "lib"), 0o755))
+	for _, library := range fakeLibraries {
+		require.NoError(t, os.WriteFile(filepath.Join(tools.Dir, "lib", library), []byte(library), 0o644))
+	}
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "proc", "sys", "kernel"), 0o755))
 	config := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(config, []byte("machine: {token: secret}"), 0o600))
-	env := tools.Env("BUILD_WORK_DIR="+filepath.Join(dir, "work"), "BUILD_OUT_DIR="+filepath.Join(dir, "out"),
-		"BUILD_DISK="+filepath.Join(dir, "disk"), "BUILD_RESOLV_CONF="+filepath.Join(dir, "resolv.conf"),
-		"BUILD_PROC="+filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1")
+	env := tools.Env(append([]string{"BUILD_WORK_DIR=" + filepath.Join(dir, "work"), "BUILD_OUT_DIR=" + filepath.Join(dir, "out"),
+		"BUILD_DISK=" + filepath.Join(dir, "disk"), "BUILD_RESOLV_CONF=" + filepath.Join(dir, "resolv.conf"),
+		"BUILD_PROC=" + filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1"}, extraEnv...)...)
 	out, err := testutil.RunBash(t, buildImageScript, env, testImager, config, routerAddress)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
+}
+
+// loaderRun is one program the build ran through the loader, with the directory it took the libraries from, and its
+// index among the calls.
+type loaderRun struct {
+	program, libraries string
+	call               int
+}
+
+func (r scriptRun) loaderRuns(t *testing.T) []loaderRun {
+	t.Helper()
+	var runs []loaderRun
+	for i, call := range r.tools.Calls(t) {
+		args, ok := strings.CutPrefix(call, fakeLoader+" ")
+		if !ok {
+			continue
+		}
+		run := loaderRun{call: i}
+		fields := strings.Fields(args)
+		for j := 0; j < len(fields) && run.program == ""; j++ {
+			switch {
+			case fields[j] == "--library-path":
+				require.Less(t, j+1, len(fields), "--library-path without a path: %s", call)
+				j++
+				run.libraries = fields[j]
+			case !strings.HasPrefix(fields[j], "--"):
+				run.program = fields[j]
+			}
+		}
+		runs = append(runs, run)
+	}
+	return runs
+}
+
+// tmpfsAtFreeze are the files in the build tmpfs when the root filesystem froze.
+func (r scriptRun) tmpfsAtFreeze(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(r.tools.Dir, "tmpfs-at-freeze"))
+	require.NoError(t, err, "the build never froze its root filesystem")
+	return strings.Fields(string(data))
+}
+
+// ranAfterFreeze are the fakes on the disk that ran once the root filesystem froze.
+func (r scriptRun) ranAfterFreeze() string {
+	data, _ := os.ReadFile(filepath.Join(r.tools.Dir, "ran-after-freeze"))
+	return string(data)
 }
 
 func TestBuildImage_RoutesThroughTheGatewayBuildsWritesTheDiskAndPowersOff(t *testing.T) {
@@ -98,7 +179,7 @@ func TestBuildImage_RoutesThroughTheGatewayBuildsWritesTheDiskAndPowersOff(t *te
 	disk, _ := os.ReadFile(filepath.Join(dir, "disk"))
 	assert.Equal(t, "talos image", string(disk), "the disk holds the image")
 	sysrq, _ := os.ReadFile(filepath.Join(dir, "proc", "sysrq-trigger"))
-	assert.Equal(t, "o\n", string(sysrq), "the builder powers off")
+	assert.Equal(t, "o", string(sysrq), "the builder powers off with the single character the sysrq trigger reads")
 	resolv, _ := os.ReadFile(filepath.Join(dir, "resolv.conf"))
 	assert.Equal(t, "nameserver 185.12.64.1\nnameserver 185.12.64.2\n", string(resolv))
 	assert.NoFileExists(t, filepath.Join(dir, "config.yaml"), "the configuration outlives the build")
@@ -120,10 +201,56 @@ func TestBuildImage_WritesTheDiskFromATmpfsNeverFromTheDiskItOverwrites(t *testi
 		return strings.HasPrefix(reads[0], target+"/")
 	}), "dd writes the image read from %s, outside every tmpfs", reads[0])
 	calls := run.tools.Calls(t)
-	sync := slices.Index(calls, "sync ")
+	freeze := slices.Index(calls, "fsfreeze -f /")
 	dd := slices.IndexFunc(calls, func(call string) bool { return strings.HasPrefix(call, "dd ") })
-	assert.True(t, sync >= 0 && sync < dd, "the removed output is synced before dd overwrites the disk: %v", calls)
+	assert.True(t, freeze >= 0 && freeze < dd, "the root filesystem, removed output included, is frozen before dd overwrites the disk: %v", calls)
 	assert.NoDirExists(t, filepath.Join(run.dir, "out"), "imager's output outlives the build on the disk dd overwrites")
+}
+
+func TestBuildImage_FreezesTheRootThenOverwritesAndPowersOffFromTheTmpfsAlone(t *testing.T) {
+	run := runBuild(t, 0)
+
+	require.NoError(t, run.err, run.out)
+	calls := run.tools.Calls(t)
+	freeze := slices.Index(calls, "fsfreeze -f /")
+	require.GreaterOrEqual(t, freeze, 0, "the root filesystem is never frozen: %v", calls)
+	runs := run.loaderRuns(t)
+	require.Len(t, runs, 3, "the loader runs bash, then zstd and dd: %v", calls)
+	assert.Equal(t, "bash", filepath.Base(runs[0].program), "the final stage runs in bash: %v", runs)
+	assert.ElementsMatch(t, []string{"zstd", "dd"}, []string{filepath.Base(runs[1].program), filepath.Base(runs[2].program)},
+		"the final stage pipes zstd into dd: %v", runs)
+	atFreeze := run.tmpfsAtFreeze(t)
+	for _, loaded := range runs {
+		assert.Greater(t, loaded.call, freeze, "%s ran before the freeze: %v", loaded.program, calls)
+		assert.Contains(t, atFreeze, loaded.program, "%s was not copied into the tmpfs before the freeze", loaded.program)
+		for _, library := range fakeLibraries {
+			assert.Contains(t, atFreeze, filepath.Join(loaded.libraries, library),
+				"%s loads its libraries from %s, which held no copy of %s at the freeze", loaded.program, loaded.libraries, library)
+		}
+	}
+	locales, _ := os.ReadFile(filepath.Join(run.tools.Dir, "loader-locales"))
+	assert.Equal(t, "C\nC\nC\n", string(locales), "bash, zstd and dd do not all run in the C locale, which reads no locale file")
+	assert.Empty(t, run.ranAfterFreeze(), "programs on the disk ran after the freeze")
+	assert.Contains(t, calls, "dd of="+filepath.Join(run.dir, "disk")+" bs=4M oflag=direct conv=fsync status=none")
+	assert.False(t, slices.ContainsFunc(calls, func(call string) bool { return strings.HasPrefix(call, "sync ") }),
+		"sync ran, which the freeze and conv=fsync make redundant: %v", calls)
+	sysrq, _ := os.ReadFile(filepath.Join(run.dir, "proc", "sysrq-trigger"))
+	assert.Equal(t, "o", string(sysrq), "the final stage powers the builder off")
+	assert.NotContains(t, run.out, "a diagnostic on stderr", "the final stage printed after the freeze")
+}
+
+func TestBuildImage_AFailedOverwriteAfterTheFreezeKeepsTheBuilderRunning(t *testing.T) {
+	for _, failing := range []string{"zstd", "dd"} {
+		t.Run("a failing "+failing, func(t *testing.T) {
+			run := runBuild(t, 0, "FAKE_FAILING="+failing)
+
+			require.Error(t, run.err, run.out)
+			assert.Contains(t, run.tools.Calls(t), "fsfreeze -f /", "the build failed before the final stage")
+			assert.NoFileExists(t, filepath.Join(run.dir, "proc", "sysrq-trigger"),
+				"the builder powered off after a failed overwrite, so the block would snapshot a broken disk")
+			assert.NotContains(t, run.out, "a diagnostic on stderr", "the final stage printed after the freeze")
+		})
+	}
 }
 
 func TestBuildImage_AFailedImagerWritesNothingAndKeepsTheBuilderRunning(t *testing.T) {
