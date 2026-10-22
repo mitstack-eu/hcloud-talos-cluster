@@ -84,8 +84,10 @@ stage() {
 overwrite_disk() {
   local staged=$1 image=$2 disk=$3 proc=$4
   exec > /dev/null 2>&1
+  printf 3 > "$proc/sys/vm/drop_caches"
   "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/zstd" -dc "$image" |
     "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/dd" of="$disk" bs=4M oflag=direct conv=fsync status=none
+  printf 3 > "$proc/sys/vm/drop_caches"
   printf o > "$proc/sysrq-trigger"
 }
 
