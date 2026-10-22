@@ -379,3 +379,17 @@ func TestObserve_AGatewayWhoseRepositoryCannotBeNamedCarriesNeitherOutputAndSays
 	assert.Empty(t, obs.Outputs, "the gateway's outputs")
 	assert.Contains(t, obs.StatusDetail, "secrets.github.token is empty")
 }
+
+func TestObserve_AGatewayWithoutItsDigestLabelCarriesNeitherOutputAndSaysWhy(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, e.converge())
+	gateway := e.hetzner.byRole(t, roleGateway)[0]
+	delete(e.hetzner.servers[gateway.ID].Labels, keyEnrolmentSHA256)
+
+	obs, err := observers()[resGateway].ObserveResource(e.ctx(), contract.ResourceRef{Desired: e.desired()})
+
+	require.NoError(t, err)
+	assert.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
+	assert.Empty(t, obs.Outputs, "the gateway's outputs")
+	assert.Contains(t, obs.StatusDetail, "no "+keyEnrolmentSHA256+" label")
+}
