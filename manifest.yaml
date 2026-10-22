@@ -22,21 +22,16 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.4.0
-  releaseClass: feature
+  version: 0.4.1
+  releaseClass: correctness-fix
   releaseNote: >-
-    Every cluster runs three control-plane nodes, one in each of fsn1, nbg1
-    and hel1, with a public and a private load balancer in each location, so
-    etcd keeps quorum while two of its three members are up. The block no
-    longer reads a location param. The cluster resource still carries the
-    enrolment digest and the cluster repository while it waits on its nodes'
-    report.
+    The block's description fits the platform's limit of 240 characters, so
+    the platform accepts this release's manifest.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, one
-    control-plane node in each of fsn1, nbg1 and hel1 with a public and a
-    private load balancer in each location, booted from its own image with no
-    user data, with Argo CD syncing the cluster from a private GitHub
-    repository the block creates for the app.
+    control-plane node in each of fsn1, nbg1 and hel1 behind load balancers
+    in each location, booted from its own image, with Argo CD syncing a
+    repository the block creates.
   lifecycle:
     endpoint: https://api.mitstack.dev/operators/hcloud-talos-cluster/hook
     operations: [subscribe, unsubscribe, upgrade, validate]
