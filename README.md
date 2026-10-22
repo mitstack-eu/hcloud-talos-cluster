@@ -32,7 +32,7 @@ public address.
 |---|---|---|
 | Network `10.0.0.0/16` | Holds every server and load balancer, and routes `0.0.0.0/0` to the gateway at `10.0.0.2` | `ensureNetwork` in `resource.go` |
 | Firewall | Holds no rule, and is applied to every server, so nothing reaches a server from the internet | `createFirewall` in `resource.go` |
-| Gateway | The only server with a public address. It runs the kit's cloud-config, which forwards and records the node's DNS, NTP and HTTPS and serves its image mirror | `install` in `install.go` |
+| Gateway | The only server with a public address. It runs the kit's cloud-config, which forwards and records the node's DNS, NTP and HTTPS and serves its image mirror. It is a `cx23`, or a `cpx22` when Hetzner reads `cx23` as sold out in the location | `install` and `orderableGatewayType` in `install.go` |
 | API load balancer | Carries the Kubernetes API on port 6443 at `10.0.0.3` on the private network, with no public interface | `apiLoadBalancer` and `loadBalancerStep` in `resource.go` |
 | Ingress load balancer | Serves ports 80 and 443 on its public address to the NodePorts 30080 and 30081, with PROXY protocol, and sits at `10.0.0.4` on the network | `ingressLoadBalancer` and `loadBalancerStep` in `resource.go` |
 | Builder | A short-lived server that builds the image with imager, writes it over its own disk and powers off. Its user data carries the machine configuration gzipped, in cloud-init's `gz+b64` encoding, since as text it is over Hetzner's 32 KiB user data limit | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
@@ -129,7 +129,8 @@ A builder still running 30 minutes after its creation has failed, since its
 script leaves a failed build running. Validate then asks for a re-drive, and
 that subscribe deletes the builder and refuses with `image-build-failed`. A
 server Hetzner cannot place in the location fails the subscribe with
-`server-unavailable`, naming Hetzner's reason. An install whose create fails
+`server-unavailable`, naming Hetzner's reason. So does a location that can
+order neither gateway type, before any server is created. An install whose create fails
 deletes the gateway and the builder, so the next call installs anew.
 
 The cluster's keys exist only in the call that mints them, the builder's user
