@@ -95,8 +95,11 @@ function a subscribe takes its step from. A run moves through these steps:
    outlast a call. Once the snapshot reads available, one call deletes the
    builder and the next creates the node from the snapshot.
 5. The gateway starts etcd, the store that holds the cluster's state, on the
-   node. It finds the node among the addresses its flow record holds. It then
-   checks that the node's Talos API, on port 50000, presents a certificate
+   node. The node keeps the address Hetzner's DHCP gives it and sends all
+   other traffic through the network's router at `10.0.0.1`, whose route
+   leads to the gateway. The gateway therefore finds the node among the
+   addresses its flow record holds. It then checks that the node's Talos
+   API, on port 50000, presents a certificate
    signed by the cluster's own CA, so an address alone is never trusted. Last,
    it runs talos-cluster-kit's etcd bootstrap once.
 6. Inside the cluster, a Job calls the platform's enrolment route once. It
@@ -141,7 +144,7 @@ subscription's mark.
 The node report, the enrolment Job and the token renewal run in the
 talos-cluster-kit tools image, which the kit's own release publishes and signs.
 The block takes it from `tools.Image` in the kit release `go.mod` requires,
-such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.3.0@sha256:16c519dc…`.
+such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.4.0@sha256:cd632563…`.
 A build against a kit whose `tools.Image` carries the `unreleased` placeholder
 tag refuses every subscribe.
 

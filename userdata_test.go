@@ -173,6 +173,29 @@ func TestGateway_RunsTheKitsCloudConfigAndThenBootstrapsTheFirstNodeWithAShortLi
 	assert.LessOrEqual(t, len(e.hetzner.userData[gw.ID]), 32*1024, "Hetzner's user data limit")
 }
 
+func TestGateway_StartsTheMirrorBesideItsFirewallAndPassesPullsThroughIt(t *testing.T) {
+	e := subscribedOnce(t)
+
+	kit := decodeCloudConfig(t, gatewayParts(t, e.hetzner.userData[e.hetzner.byRole(t, roleGateway)[0].ID])[0])
+
+	assert.Contains(t, kit.file(t, "/etc/mitstack-gateway/Caddyfile").Content,
+		"  route /v2/* {\n    reverse_proxy @pull 127.0.0.1:5000\n    respond 405\n  }\n", "the mirror tries the registry for a pull before refusing")
+	assert.JSONEq(t, `{"iptables": false, "ip6tables": false, "bridge": "none"}`, kit.file(t, "/etc/docker/daemon.json").Content,
+		"Docker writes iptables rules the gateway's nftables deletes, so the mirror never starts")
+}
+
+func TestBuilder_TheNodeRoutesThroughTheNetworksRouterAndKeepsItsDHCPAddress(t *testing.T) {
+	e := subscribedOnce(t)
+	config := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]).file(t, builderConfigPath)
+
+	docs := testutil.Documents(t, []byte(config.Content))
+
+	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "LinkConfig", "name": "eth0",
+		"routes": []any{map[string]any{"gateway": routerAddress}}}}, testutil.Kind(docs, "LinkConfig"), "the node's default route")
+	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "DHCPv4Config", "name": "eth0"}}, testutil.Kind(docs, "DHCPv4Config"),
+		"the node's DHCP, which its LinkConfig would otherwise stop")
+}
+
 func adminCertificate(t *testing.T, talosconfig string) *x509.Certificate {
 	t.Helper()
 	var cfg struct {

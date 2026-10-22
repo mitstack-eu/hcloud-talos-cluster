@@ -21,12 +21,12 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.2.2
+  version: 0.2.3
   releaseClass: correctness-fix
   releaseNote: >-
-    The builder now finishes the cluster's image, because imager writes its
-    4.2 GiB raw disk to the builder's disk instead of a 2 GiB tmpfs that
-    could never hold it.
+    A subscribe now reaches a running node, because the gateway's mirror
+    starts and serves pulls and the node routes its traffic through the
+    gateway.
   description: >
     Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
     or hel1, booted from its own image with no user data, with Argo CD
