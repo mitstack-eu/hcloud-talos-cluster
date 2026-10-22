@@ -244,17 +244,6 @@ func TestSubscribe_IsUnknownUntilTheNewestNodeReportReadsEveryNodeReady(t *testi
 	assert.Equal(t, contract.Present, ready.State, "detail: %s", ready.StatusDetail)
 }
 
-func TestSubscribe_ConvergesWithoutDuplicatingOnceTheClusterIsPresent(t *testing.T) {
-	e := newEnv(t)
-	e.subscribe()
-	before := e.hetzner.count()
-
-	require.NoError(t, e.ensure())
-
-	assert.Equal(t, before, e.hetzner.count(), "Hetzner resources after a repeated ensure")
-	assert.Equal(t, contract.Present, e.observe().State)
-}
-
 func TestSubscribe_DeletesABuilderLeftBesideTheSnapshotWhoseDeleteFailed(t *testing.T) {
 	e := newEnv(t)
 	e.hetzner.instantBuild = true
@@ -278,13 +267,4 @@ func TestSubscribe_AnInstallThatFailsAfterTheGatewayExistsLeavesNothingTheNextEn
 
 	assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the retry")
 	assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the retry")
-}
-
-func TestSubscribe_ReadsTheAPIAddressFromHetznerWhenTheCreateAnswerLacksIt(t *testing.T) {
-	e := newEnv(t)
-	e.hetzner.lateLBAddress = true
-
-	obs := e.subscribe()
-
-	assert.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
 }

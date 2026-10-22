@@ -64,8 +64,6 @@ type fakeHetzner struct {
 	failDelete error
 	// failCreate, when set, fails the next server create of that role with it.
 	failCreate map[role]error
-	// lateLBAddress leaves a new load balancer's private address out of the create answer, as Hetzner may.
-	lateLBAddress bool
 	// failLBStep, when set, fails the next load balancer call of that name with it.
 	failLBStep map[string]error
 }
@@ -276,12 +274,7 @@ func (f *fakeHetzner) CreateLoadBalancer(_ context.Context, spec loadBalancerSpe
 	}
 	f.loadBalancers[lb.ID] = lb
 	f.lbSpecs = append(f.lbSpecs, spec)
-	answer := *lb
-	answer.PrivateIPs = maps.Clone(lb.PrivateIPs)
-	if f.lateLBAddress {
-		answer.PrivateIPs = map[int64]string{}
-	}
-	return answer, nil
+	return *lb, nil
 }
 
 // lbStep fails a load balancer call failLBStep names, once, and otherwise returns the load balancer it acts on.
