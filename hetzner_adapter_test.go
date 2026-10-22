@@ -69,9 +69,11 @@ func TestHetznerAdapter_CreatesThePrivateLoadBalancerWithNoPublicInterfaceAndLab
 			"action": ` + finishedAction + `}`,
 	})
 
-	_, err := newHetznerAPI("token").CreateLoadBalancer(context.Background(), apiLoadBalancer(ensureRequest{
-		subID: testSub, params: clusterParams{appName: testApp, location: "nbg1"},
-	}, 3))
+	_, err := newHetznerAPI("token").CreateLoadBalancer(context.Background(), loadBalancerSpec{
+		Name: "api", Type: "lb11", Location: "fsn1", NetworkID: 3,
+		Services:       []lbService{{ListenPort: 6443, DestinationPort: 6443}},
+		TargetSelector: roleSelector(testSub, roleNode),
+	})
 
 	require.NoError(t, err)
 	body := bodies["POST /load_balancers"]

@@ -76,6 +76,15 @@ func resourceName(appName, subscriptionID string, r role) string {
 	return prefix + tail
 }
 
+// locatedName is resourceName with the location after the role, since the cluster holds one of the role in each.
+func locatedName(appName, subscriptionID string, r role, loc string) string {
+	return resourceName(appName, subscriptionID, role(string(r)+"-"+loc))
+}
+
+func located(resource, loc string) string {
+	return resource + "-" + loc
+}
+
 func hostnamePart(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(s) {

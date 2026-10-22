@@ -50,7 +50,10 @@ type fakeHetzner struct {
 	snapshots     map[int64]*hcSnapshot
 	serverSpecs   []serverSpec
 	lbSpecs       []loadBalancerSpec
-	now           func() time.Time
+	networkSpecs  []networkSpec
+	// nodesPerCreate holds how many nodes each server create made.
+	nodesPerCreate []int
+	now            func() time.Time
 	// started and imaging hold when each server was powered on and each snapshot was started.
 	started, imaging map[int64]time.Time
 	// waits counts the calls the adapter waits on a Hetzner action for, and writes every call that changes something.
@@ -165,6 +168,13 @@ func (f *fakeHetzner) CreateServers(_ context.Context, specs ...serverSpec) ([]h
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.write(true)
+	nodes := 0
+	for _, spec := range specs {
+		if spec.Labels[keyRole] == string(roleNode) {
+			nodes++
+		}
+	}
+	f.nodesPerCreate = append(f.nodesPerCreate, nodes)
 	var created []hcServer
 	for _, spec := range specs {
 		if err := f.failCreate[role(spec.Labels[keyRole])]; err != nil {
@@ -296,6 +306,7 @@ func (f *fakeHetzner) CreateNetwork(_ context.Context, spec networkSpec) (hcNetw
 	f.write(false)
 	n := &hcNetwork{ID: f.id(), Name: spec.Name, IPRange: spec.IPRange, Labels: maps.Clone(spec.Labels), Routes: spec.Routes}
 	f.networks[n.ID] = n
+	f.networkSpecs = append(f.networkSpecs, spec)
 	return *n, nil
 }
 
@@ -435,13 +446,21 @@ func (f *fakeHetzner) AddLoadBalancerTarget(_ context.Context, id int64, labelSe
 	return nil
 }
 
-// loadBalancer returns the one load balancer carrying role r.
-func (f *fakeHetzner) loadBalancer(t *testing.T, r role) hcLoadBalancer {
+// clusterLocationNames are Hetzner Cloud's three European locations, each of which holds one node of every cluster.
+var clusterLocationNames = []string{"fsn1", "nbg1", "hel1"}
+
+// lbsByLocation returns the load balancers carrying role r by location, failing unless each location holds exactly one.
+func (f *fakeHetzner) lbsByLocation(t *testing.T, r role) map[string]hcLoadBalancer {
 	t.Helper()
 	lbs, err := f.ListLoadBalancers(context.Background(), roleSelector(testSub, r))
 	require.NoError(t, err)
-	require.Len(t, lbs, 1, "%s load balancers", r)
-	return lbs[0]
+	byLocation := map[string]hcLoadBalancer{}
+	for _, lb := range lbs {
+		byLocation[lb.Location] = lb
+	}
+	require.Len(t, lbs, len(clusterLocationNames), "%s load balancers", r)
+	require.ElementsMatch(t, clusterLocationNames, slices.Collect(maps.Keys(byLocation)), "the %s load balancers' locations", r)
+	return byLocation
 }
 
 func (f *fakeHetzner) DeleteLoadBalancer(_ context.Context, id int64) error {
@@ -696,7 +715,7 @@ type env struct {
 	params  map[string]string
 	// buildTakes and imageTakes are how long the builder and the snapshot run once started; a zero build never ends.
 	buildTakes, imageTakes time.Duration
-	// quietNode holds back the node's report, so the cluster waits on it.
+	// quietNode holds back the nodes' report, so the cluster waits on it.
 	quietNode bool
 	eng       *engine
 }
@@ -704,7 +723,7 @@ type env struct {
 type envOption func(*env)
 
 func withLocation(location string) envOption {
-	return func(e *env) { e.params["location"] = location }
+	return withParam("location", location)
 }
 
 func withParam(key, value string) envOption {
@@ -714,7 +733,7 @@ func withParam(key, value string) envOption {
 func newEnv(t *testing.T, opts ...envOption) *env {
 	t.Helper()
 	e := &env{
-		t: t, now: testStart, reports: &fakeReports{}, params: map[string]string{"appName": testApp, "location": "nbg1"},
+		t: t, now: testStart, reports: &fakeReports{}, params: map[string]string{"appName": testApp},
 		block: &blockResource{}, buildTakes: 10 * time.Minute, imageTakes: 3 * time.Minute,
 	}
 	e.hetzner = newFakeHetzner(func() time.Time { return e.now })
@@ -790,11 +809,12 @@ func (e *env) observe() contract.Observation {
 	return obs
 }
 
-// progress plays what Hetzner, the builder and the node do on their own while the platform waits.
+// progress plays what Hetzner, the builder and the nodes do on their own while the platform waits: the cluster
+// reports every node Ready once all three exist.
 func (e *env) progress() {
 	e.hetzner.advance(e.buildTakes, e.imageTakes)
-	if !e.quietNode && len(e.hetzner.byRole(e.t, roleNode)) == 1 && len(e.reports.reports) == 0 {
-		e.reports.report(e.now, true)
+	if !e.quietNode && len(e.hetzner.byRole(e.t, roleNode)) == len(clusterLocationNames) && len(e.reports.reports) == 0 {
+		e.reports.report(e.now, true, true, true)
 	}
 }
 

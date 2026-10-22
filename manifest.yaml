@@ -1,13 +1,14 @@
-# hcloud-talos-cluster runs a one-node Talos Kubernetes cluster on Hetzner
-# Cloud for one app, from talos-cluster-kit. Subscribe creates a private
-# network whose default route goes to a gateway, a firewall with no rule, a
-# private load balancer for the Kubernetes API and a public one for ports 80
-# and 443 that both find the node by label, and a private cluster repository
-# on GitHub. The gateway, the cluster's only server with a public address,
-# forwards and records the node's traffic and serves its image mirror. A
-# short-lived builder builds the cluster's own disk image with the machine
-# configuration embedded, writes it to its disk and powers off, and that disk
-# becomes the snapshot the node boots from with no user data.
+# hcloud-talos-cluster runs a three-node Talos Kubernetes cluster on Hetzner
+# Cloud for one app, from talos-cluster-kit, with one control-plane node in
+# each of fsn1, nbg1 and hel1. Subscribe creates a private network whose
+# default route goes to a gateway, a firewall with no rule, and in each
+# location a private load balancer for the Kubernetes API and a public one for
+# ports 80 and 443 that both find every node by label, and a private cluster
+# repository on GitHub. The gateway, the cluster's only server with a public
+# address, forwards and records the nodes' traffic and serves their image
+# mirror. A short-lived builder builds the cluster's own disk image with the
+# machine configuration embedded, writes it to its disk and powers off, and
+# that disk becomes the snapshot every node boots from with no user data.
 #
 # Every Hetzner resource carries the subscription id as a label and the
 # repository carries it as a topic. Upgrade converges what is missing and
@@ -21,24 +22,26 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.3.0
+  version: 0.4.0
   releaseClass: feature
   releaseNote: >-
-    A new cluster runs the CloudNativePG operator and Kyverno, which refuses
-    a pod without the mitstack.dev/app label and gives every app namespace a
-    default-deny network policy, and its node report lists CloudNativePG's
-    clusters, databases and roles. A cluster built before this release keeps
-    the components it was built with.
+    Every cluster runs three control-plane nodes, one in each of fsn1, nbg1
+    and hel1, with a public and a private load balancer in each location, so
+    etcd keeps quorum while two of its three members are up. The block no
+    longer reads a location param. The cluster resource still carries the
+    enrolment digest and the cluster repository while it waits on its nodes'
+    report.
   description: >
-    Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
-    or hel1, booted from its own image with no user data, with Argo CD
-    syncing the cluster from a private GitHub repository the block creates
-    for the app.
+    Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, one
+    control-plane node in each of fsn1, nbg1 and hel1 with a public and a
+    private load balancer in each location, booted from its own image with no
+    user data, with Argo CD syncing the cluster from a private GitHub
+    repository the block creates for the app.
   lifecycle:
     endpoint: https://api.mitstack.dev/operators/hcloud-talos-cluster/hook
     operations: [subscribe, unsubscribe, upgrade, validate]
     contract: kit/v1
-    # The image build, its snapshot and the node's first boot take up to 45m.
+    # The image build, its snapshot and the nodes' first boot take up to 45m.
     settleBudget: 60m
     verbConnections:
       validate: [hetzner, github]
@@ -46,16 +49,28 @@ spec:
   resources:
     - hetzner.network
     - hetzner.firewall
-    - name: api-load-balancer
+    - name: api-load-balancer-fsn1
       type: hetzner.load-balancer
-    - name: ingress-load-balancer
+    - name: ingress-load-balancer-fsn1
+      type: hetzner.load-balancer
+    - name: api-load-balancer-nbg1
+      type: hetzner.load-balancer
+    - name: ingress-load-balancer-nbg1
+      type: hetzner.load-balancer
+    - name: api-load-balancer-hel1
+      type: hetzner.load-balancer
+    - name: ingress-load-balancer-hel1
       type: hetzner.load-balancer
     - name: github.repository
       type: github.gitops-repository
     - github.gitops-commit
     - name: gateway
       type: hetzner.server
-    - name: node
+    - name: node-fsn1
+      type: hetzner.server
+    - name: node-nbg1
+      type: hetzner.server
+    - name: node-hel1
       type: hetzner.server
     - hetzner.kubernetes-cluster
   provides:

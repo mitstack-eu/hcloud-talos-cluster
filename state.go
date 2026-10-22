@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -68,11 +69,29 @@ func (st clusterState) server(r role) (hcServer, bool) {
 	return st.servers[r][0], true
 }
 
-func (st clusterState) loadBalancer(r role) (hcLoadBalancer, bool) {
-	if len(st.loadBalancers[r]) != 1 {
-		return hcLoadBalancer{}, false
+func (st clusterState) nodeIn(loc string) (hcServer, bool) {
+	return onlyOne(serversIn(st.servers[roleNode], loc))
+}
+
+func (st clusterState) loadBalancerIn(r role, loc string) (hcLoadBalancer, bool) {
+	return onlyOne(loadBalancersIn(st.loadBalancers[r], loc))
+}
+
+// serversIn reads a location from Hetzner's own record of the server, never from its name or a label.
+func serversIn(servers []hcServer, loc string) []hcServer {
+	return slices.DeleteFunc(slices.Clone(servers), func(s hcServer) bool { return s.Location != loc })
+}
+
+func loadBalancersIn(lbs []hcLoadBalancer, loc string) []hcLoadBalancer {
+	return slices.DeleteFunc(slices.Clone(lbs), func(lb hcLoadBalancer) bool { return lb.Location != loc })
+}
+
+func onlyOne[T any](items []T) (T, bool) {
+	if len(items) != 1 {
+		var none T
+		return none, false
 	}
-	return st.loadBalancers[r][0], true
+	return items[0], true
 }
 
 func (st clusterState) snapshot() (hcSnapshot, bool) {
@@ -104,11 +123,14 @@ func (st clusterState) duplicates() []string {
 	add("network", idsOf(st.networks, func(n hcNetwork) int64 { return n.ID }))
 	add("firewall", idsOf(st.firewalls, func(f hcFirewall) int64 { return f.ID }))
 	add("snapshot", idsOf(st.snapshots, func(s hcSnapshot) int64 { return s.ID }))
-	for _, r := range []role{roleGateway, roleBuilder, roleNode} {
-		add(string(r)+" server", idsOf(st.servers[r], func(s hcServer) int64 { return s.ID }))
+	for _, r := range []role{roleGateway, roleBuilder} {
+		add(string(r)+" server", idsOf(st.servers[r], serverID))
 	}
-	for _, r := range []role{roleAPI, roleIngress} {
-		add(string(r)+" load balancer", idsOf(st.loadBalancers[r], func(lb hcLoadBalancer) int64 { return lb.ID }))
+	for _, loc := range clusterLocations {
+		add(loc.name+" node server", idsOf(serversIn(st.servers[roleNode], loc.name), serverID))
+		for _, r := range []role{roleAPI, roleIngress} {
+			add(loc.name+" "+string(r)+" load balancer", idsOf(loadBalancersIn(st.loadBalancers[r], loc.name), loadBalancerID))
+		}
 	}
 	return out
 }
@@ -120,6 +142,10 @@ func duplicatesDetail(what string, ids []int64) string {
 	}
 	return fmt.Sprintf("%d %ss carry this subscription's labels: %s", len(ids), what, strings.Join(named, ", "))
 }
+
+func serverID(s hcServer) int64 { return s.ID }
+
+func loadBalancerID(lb hcLoadBalancer) int64 { return lb.ID }
 
 func idsOf[T any](items []T, id func(T) int64) []int64 {
 	out := make([]int64, len(items))
@@ -153,17 +179,21 @@ func (st clusterState) createdResources(subID string, repo clusterRepo) []contra
 	add(resNetwork, resNetwork, "networkId", network.ID, networkOK)
 	firewall, firewallOK := st.firewall()
 	add(resFirewall, resFirewall, "firewallId", firewall.ID, firewallOK)
-	api, apiOK := st.loadBalancer(roleAPI)
-	add(resPrivateLB, typeLoadBalancer, "loadBalancerId", api.ID, apiOK)
-	ingress, ingressOK := st.loadBalancer(roleIngress)
-	add(resPublicLB, typeLoadBalancer, "loadBalancerId", ingress.ID, ingressOK)
+	for _, loc := range clusterLocations {
+		api, apiOK := st.loadBalancerIn(roleAPI, loc.name)
+		add(located(resPrivateLB, loc.name), typeLoadBalancer, "loadBalancerId", api.ID, apiOK)
+		ingress, ingressOK := st.loadBalancerIn(roleIngress, loc.name)
+		add(located(resPublicLB, loc.name), typeLoadBalancer, "loadBalancerId", ingress.ID, ingressOK)
+	}
 	repoIdentity := map[string]string{"repo": repo.fullName()}
 	out = append(out,
 		contract.CreatedResource{Name: resRepository, Type: typeRepository, Identity: repoIdentity},
 		contract.CreatedResource{Name: resSeedCommit, Type: resSeedCommit, Identity: repoIdentity})
 	gw, gwOK := st.server(roleGateway)
 	add(resGateway, typeServer, "serverId", gw.ID, gwOK)
-	node, nodeOK := st.server(roleNode)
-	add(resNode, typeServer, "serverId", node.ID, nodeOK)
+	for _, loc := range clusterLocations {
+		node, nodeOK := st.nodeIn(loc.name)
+		add(located(resNode, loc.name), typeServer, "serverId", node.ID, nodeOK)
+	}
 	return append(out, contract.CreatedResource{Name: resCluster, Type: resCluster, Identity: map[string]string{"subscriptionId": subID}})
 }

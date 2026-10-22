@@ -83,22 +83,24 @@ type reportedNode struct {
 	Ready bool   `json:"ready"`
 }
 
-// reportProblem names why the cluster has not yet reported every node Ready since the node was created, or "".
-func reportProblem(ctx context.Context, d contract.Desired, node hcServer) string {
-	since := node.Created.UTC().Format(time.RFC3339)
+// reportProblem names why the cluster has not yet reported every node Ready since the last of its nodes was created,
+// or "". A report naming fewer nodes than the cluster has servers for has not heard from every node.
+func reportProblem(ctx context.Context, d contract.Desired, nodes []hcServer) string {
+	last := lastCreated(nodes)
+	since := last.UTC().Format(time.RFC3339)
 	reports, err := nodeReports.NodeReports(ctx, d, d.SubscriptionID)
 	if err != nil {
-		return fmt.Sprintf("the node reports since the node's creation at %s cannot be read: %v", since, err)
+		return fmt.Sprintf("the node reports since the last node's creation at %s cannot be read: %v", since, err)
 	}
-	newest, err := newestReportSince(reports, node.Created)
+	newest, err := newestReportSince(reports, last)
 	if err != nil {
 		return err.Error()
 	}
 	if newest == nil {
-		return "the cluster has sent no node report since the node's creation at " + since
+		return "the cluster has sent no node report since the last node's creation at " + since
 	}
-	if len(newest) == 0 {
-		return "the newest node report names no node"
+	if len(newest) < len(nodes) {
+		return fmt.Sprintf("the newest node report names %d nodes, and the cluster has %d", len(newest), len(nodes))
 	}
 	for _, n := range newest {
 		if !n.Ready {
@@ -106,6 +108,16 @@ func reportProblem(ctx context.Context, d contract.Desired, node hcServer) strin
 		}
 	}
 	return ""
+}
+
+func lastCreated(servers []hcServer) time.Time {
+	var last time.Time
+	for _, s := range servers {
+		if s.Created.After(last) {
+			last = s.Created
+		}
+	}
+	return last
 }
 
 // newestReportSince returns the nodes of the newest report received after since, or nil when there is none.

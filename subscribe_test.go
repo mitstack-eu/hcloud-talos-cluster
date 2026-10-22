@@ -1,6 +1,7 @@
 package main
 
-// Subscribe builds a one-node Talos cluster a step a call: gateway and builder, then the snapshot, then the node it boots.
+// Subscribe builds a three-node Talos cluster a step a call: the load balancers of each location, gateway and builder,
+// then the snapshot, then one node in each of fsn1, nbg1 and hel1 booted from it.
 
 import (
 	"encoding/json"
@@ -17,34 +18,61 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSubscribe_BuildsAOneNodeClusterInEachLocation(t *testing.T) {
-	for _, location := range []string{"fsn1", "nbg1", "hel1"} {
-		t.Run(location, func(t *testing.T) {
-			e := newEnv(t, withLocation(location))
+func TestSubscribe_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetworkWhateverLocationIsSent(t *testing.T) {
+	cases := []struct {
+		name string
+		opts []envOption
+	}{
+		{name: "a subscribe with no location param builds all three"},
+		{name: "a subscribe naming hel1 as its location builds all three", opts: []envOption{withLocation("hel1")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, tc.opts...)
 
 			obs := e.subscribe()
 
 			require.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
-			nodes, gateways := e.hetzner.byRole(t, roleNode), e.hetzner.byRole(t, roleGateway)
-			require.Len(t, nodes, 1, "nodes")
-			require.Len(t, gateways, 1, "gateways")
-			assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "a builder outlived its snapshot")
-			assert.Equal(t, location, nodes[0].Location, "the node's location")
-			assert.Equal(t, location, gateways[0].Location, "the gateway's location")
-			for _, lb := range e.hetzner.lbSpecs {
-				assert.Equal(t, location, lb.Location, "load balancer %s's location", lb.Name)
-			}
-			ingress, err := e.hetzner.ListLoadBalancers(e.ctx(), roleSelector(testSub, roleIngress))
+			networks, err := e.hetzner.ListNetworks(e.ctx(), subscriptionSelector(testSub))
 			require.NoError(t, err)
-			require.Len(t, ingress, 1)
-			var byLocation map[string]string
-			require.NoError(t, json.Unmarshal([]byte(obs.Outputs["publicIpByLocation"]), &byLocation))
-			assert.Equal(t, map[string]string{location: ingress[0].PublicIPv4}, byLocation, "publicIpByLocation")
+			require.Len(t, networks, 1, "networks")
+			require.Len(t, e.hetzner.networkSpecs, 1, "network creates")
+			assert.Equal(t, "eu-central", e.hetzner.networkSpecs[0].Subnet.NetworkZone, "the network's zone")
+			nodes := e.hetzner.byRole(t, roleNode)
+			var locations []string
+			for _, node := range nodes {
+				locations = append(locations, node.Location)
+				assert.NotEmpty(t, node.PrivateIPs[networks[0].ID], "node %s is not on the cluster's network", node.Name)
+				assert.True(t, strings.HasSuffix(node.Name, "-node-"+node.Location), "node %s in %s is not named after its location", node.Name, node.Location)
+			}
+			assert.ElementsMatch(t, clusterLocationNames, locations, "the nodes' locations")
+			gateways := e.hetzner.byRole(t, roleGateway)
+			require.Len(t, gateways, 1, "gateways")
+			assert.Equal(t, "fsn1", gateways[0].Location, "the gateway's location")
+			assert.Equal(t, "fsn1", e.hetzner.specFor(t, roleBuilder).Location, "the builder's location")
+			assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "a builder outlived its snapshot")
 		})
 	}
 }
 
-func TestSubscribe_TheNodeBootsFromTheClustersOwnSnapshot(t *testing.T) {
+func TestSubscribe_PublishesThePublicAddressOfEachLocationsIngressLoadBalancer(t *testing.T) {
+	e := newEnv(t)
+
+	obs := e.subscribe()
+
+	require.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
+	want := map[string]string{}
+	for location, lb := range e.hetzner.lbsByLocation(t, roleIngress) {
+		require.NotEmpty(t, lb.PublicIPv4, "the %s ingress load balancer's public address", location)
+		want[location] = lb.PublicIPv4
+	}
+	var byLocation map[string]string
+	require.NoError(t, json.Unmarshal([]byte(obs.Outputs["publicIpByLocation"]), &byLocation))
+	assert.Equal(t, want, byLocation, "publicIpByLocation")
+	assert.Equal(t, "https://10.0.0.3:6443", obs.Outputs["privateEndpoint"], "the private endpoint is fsn1's API load balancer")
+}
+
+func TestSubscribe_EveryNodeBootsFromTheClustersOwnSnapshot(t *testing.T) {
 	e := newEnv(t)
 
 	e.subscribe()
@@ -52,18 +80,27 @@ func TestSubscribe_TheNodeBootsFromTheClustersOwnSnapshot(t *testing.T) {
 	snaps, err := e.hetzner.ListSnapshots(e.ctx(), subscriptionSelector(testSub))
 	require.NoError(t, err)
 	require.Len(t, snaps, 1, "snapshots")
-	node := e.hetzner.byRole(t, roleNode)[0]
-	assert.Equal(t, snaps[0].ID, node.ImageID, "node %d boots from image %d; want the snapshot %d", node.ID, node.ImageID, snaps[0].ID)
+	nodes := e.hetzner.byRole(t, roleNode)
+	require.Len(t, nodes, 3, "nodes")
+	for _, node := range nodes {
+		assert.Equal(t, snaps[0].ID, node.ImageID, "node %d boots from image %d; want the snapshot %d", node.ID, node.ImageID, snaps[0].ID)
+	}
 	assert.Equal(t, string(roleImage), snaps[0].Labels[keyRole], "the snapshot's role label")
 }
 
-func TestSubscribe_TheNodeCarriesNoUserDataAndOnlyTheGatewayHoldsAPublicAddress(t *testing.T) {
+func TestSubscribe_NoNodeCarriesUserDataAndOnlyTheGatewayHoldsAPublicAddress(t *testing.T) {
 	e := newEnv(t)
 
 	e.subscribe()
 
-	node := e.hetzner.specFor(t, roleNode)
-	assert.Empty(t, node.UserData, "the node's user data")
+	nodes := 0
+	for _, spec := range e.hetzner.serverSpecs {
+		if spec.Labels[keyRole] == string(roleNode) {
+			nodes++
+			assert.Empty(t, spec.UserData, "node %s's user data", spec.Name)
+		}
+	}
+	assert.Equal(t, 3, nodes, "nodes created")
 	for _, spec := range e.hetzner.serverSpecs {
 		wantPublic := spec.Labels[keyRole] == string(roleGateway)
 		assert.Equal(t, wantPublic, spec.PublicIPv4, "server %s holds a public IPv4 = %v; want %v", spec.Name, spec.PublicIPv4, wantPublic)
@@ -76,21 +113,25 @@ func TestSubscribe_TheNodeCarriesNoUserDataAndOnlyTheGatewayHoldsAPublicAddress(
 		assert.Equal(t, []int64{firewalls[0].ID}, spec.FirewallIDs, "server %s's firewalls", spec.Name)
 	}
 	for _, r := range []role{roleAPI, roleIngress} {
-		lb := e.hetzner.loadBalancer(t, r)
-		wantPublic := r == roleIngress
-		assert.Equal(t, wantPublic, lb.PublicInterface, "load balancer %s's public interface = %v; want %v", lb.Name, lb.PublicInterface, wantPublic)
+		for _, lb := range e.hetzner.lbsByLocation(t, r) {
+			wantPublic := r == roleIngress
+			assert.Equal(t, wantPublic, lb.PublicInterface, "load balancer %s's public interface = %v; want %v", lb.Name, lb.PublicInterface, wantPublic)
+		}
 	}
 }
 
 func TestSubscribe_FailsOnceTheBuilderStillRunsPastItsDeadline(t *testing.T) {
 	e := newEnv(t)
 	e.buildTakes = 0
+	p := e.engine()
+	p.settle(func() bool { return len(e.hetzner.byRole(t, roleBuilder)) == 1 })
+	created := e.hetzner.byRole(t, roleBuilder)[0].Created
 
-	final := e.engine().settle(nil)
+	final := p.settle(nil)
 
 	assert.Equal(t, http.StatusBadRequest, final.status, "the last answer: %s", final.detail)
 	assert.Contains(t, final.detail, "image-build-failed")
-	assert.Less(t, e.now.Sub(testStart), buildDeadline+5*time.Minute, "how long the subscription waited on a failed build")
+	assert.Less(t, e.now.Sub(created), buildDeadline+5*time.Minute, "how long the subscription waited on a failed build after the builder's creation")
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder past its deadline")
 	assert.Empty(t, e.hetzner.byRole(t, roleNode), "a node with no image")
 }
@@ -212,27 +253,28 @@ func TestSubscribe_AFailedMetricsReadStillRefusesTheBuildAndSaysSo(t *testing.T)
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder past its deadline")
 }
 
-func TestSubscribe_LoadBalancersFindTheNodeByLabel(t *testing.T) {
+func TestSubscribe_EachLocationHoldsAPublicAndAPrivateLoadBalancerThatFindEveryNodeByLabel(t *testing.T) {
 	e := newEnv(t)
 
 	e.subscribe()
 
-	want := map[string]loadBalancerSpec{
-		string(roleAPI): {Services: []lbService{{ListenPort: 6443, DestinationPort: 6443}}},
-		string(roleIngress): {PublicInterface: true, Services: []lbService{
+	want := map[role][]lbService{
+		roleAPI: {{ListenPort: 6443, DestinationPort: 6443}},
+		roleIngress: {
 			{ListenPort: 80, DestinationPort: 30080, ProxyProtocol: true},
 			{ListenPort: 443, DestinationPort: 30081, ProxyProtocol: true},
-		}},
+		},
 	}
-	require.Len(t, e.hetzner.lbSpecs, 2)
+	require.Len(t, e.hetzner.lbSpecs, 6, "load balancer creates")
 	for _, r := range []role{roleAPI, roleIngress} {
-		lb := e.hetzner.loadBalancer(t, r)
-		assert.Equal(t, want[string(r)].Services, lb.Services, "the %s load balancer's services", r)
-		assert.Equal(t, []string{roleSelector(testSub, roleNode)}, lb.TargetSelectors, "the %s load balancer's targets", r)
+		for location, lb := range e.hetzner.lbsByLocation(t, r) {
+			assert.Equal(t, want[r], lb.Services, "the %s %s load balancer's services", location, r)
+			assert.Equal(t, []string{roleSelector(testSub, roleNode)}, lb.TargetSelectors, "the %s %s load balancer's targets", location, r)
+		}
 	}
 }
 
-func TestSubscribe_TheLoadBalancersJoinTheNetworkAtAddressesApartFromTheGateways(t *testing.T) {
+func TestSubscribe_TheLoadBalancersJoinTheNetworkAtTheirLocationsAddressesApartFromTheGateways(t *testing.T) {
 	e := newEnv(t)
 
 	require.NoError(t, e.converge())
@@ -240,8 +282,15 @@ func TestSubscribe_TheLoadBalancersJoinTheNetworkAtAddressesApartFromTheGateways
 	networks, err := e.hetzner.ListNetworks(e.ctx(), subscriptionSelector(testSub))
 	require.NoError(t, err)
 	require.Len(t, networks, 1)
-	for r, want := range map[role]string{roleAPI: "10.0.0.3", roleIngress: "10.0.0.4"} {
-		assert.Equal(t, map[int64]string{networks[0].ID: want}, e.hetzner.loadBalancer(t, r).PrivateIPs, "the %s load balancer's address", r)
+	want := map[role]map[string]string{
+		roleAPI:     {"fsn1": "10.0.0.3", "nbg1": "10.0.0.5", "hel1": "10.0.0.7"},
+		roleIngress: {"fsn1": "10.0.0.4", "nbg1": "10.0.0.6", "hel1": "10.0.0.8"},
+	}
+	for r, byLocation := range want {
+		lbs := e.hetzner.lbsByLocation(t, r)
+		for location, address := range byLocation {
+			assert.Equal(t, map[int64]string{networks[0].ID: address}, lbs[location].PrivateIPs, "the %s %s load balancer's address", location, r)
+		}
 	}
 	assert.Equal(t, gatewayAddress, e.hetzner.byRole(t, roleGateway)[0].PrivateIPs[networks[0].ID], "the gateway's address")
 }
@@ -257,11 +306,12 @@ func TestSubscribe_ALoadBalancerStepThatFailedIsTakenUpByTheNextEnsureWithoutADu
 			require.NoError(t, e.converge())
 
 			for _, r := range []role{roleAPI, roleIngress} {
-				lb := e.hetzner.loadBalancer(t, r)
-				assert.Len(t, lb.PrivateIPs, 1, "the %s load balancer's networks", r)
-				assert.Equal(t, r == roleIngress, lb.PublicInterface, "the %s load balancer's public interface", r)
-				assert.Len(t, lb.Services, map[role]int{roleAPI: 1, roleIngress: 2}[r], "the %s load balancer's services", r)
-				assert.Len(t, lb.TargetSelectors, 1, "the %s load balancer's targets", r)
+				for location, lb := range e.hetzner.lbsByLocation(t, r) {
+					assert.Len(t, lb.PrivateIPs, 1, "the %s %s load balancer's networks", location, r)
+					assert.Equal(t, r == roleIngress, lb.PublicInterface, "the %s %s load balancer's public interface", location, r)
+					assert.Len(t, lb.Services, map[role]int{roleAPI: 1, roleIngress: 2}[r], "the %s %s load balancer's services", location, r)
+					assert.Len(t, lb.TargetSelectors, 1, "the %s %s load balancer's targets", location, r)
+				}
 			}
 			assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the retry")
 			assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the retry")
@@ -325,7 +375,6 @@ func TestSubscribe_RefusesBeforeAnyChange(t *testing.T) {
 		setup func(t *testing.T)
 		want  string
 	}{
-		{name: "a location outside the three is refused naming them", opts: []envOption{withLocation("ash")}, want: "fsn1, nbg1 or hel1"},
 		{name: "a server type the image cannot run on is refused", opts: []envOption{withParam("serverType", "cax21")}, want: `params["serverType"] is "cax21"`},
 		{name: "a cluster that hosts the platform is refused", opts: []envOption{withParam("hostsPlatform", "true")}, want: "hostsPlatform"},
 		{
@@ -375,23 +424,49 @@ func TestSubscribe_RefusesARepositoryWithoutTheSubscriptionsMark(t *testing.T) {
 	assert.Zero(t, e.hetzner.count(), "Hetzner resources after the refusal")
 }
 
+func TestSubscribe_RefusesTwoNodesInOneLocationBeforeAnyChange(t *testing.T) {
+	e := newEnv(t)
+	e.hetzner.instantBuild = true
+	require.NoError(t, e.converge())
+	for _, node := range e.hetzner.byRole(t, roleNode) {
+		if node.Location == "nbg1" {
+			extra := node
+			extra.ID = e.hetzner.id()
+			e.hetzner.servers[extra.ID] = &extra
+		}
+	}
+	before := e.changes()
+
+	err := e.ensure()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ambiguous-cluster")
+	assert.Contains(t, err.Error(), "2 nbg1 node servers carry this subscription's labels")
+	assert.Equal(t, before, e.changes(), "changes after the refusal")
+}
+
 func TestSubscribe_IsUnknownUntilTheNewestNodeReportReadsEveryNodeReady(t *testing.T) {
 	e := newEnv(t)
 	e.hetzner.instantBuild = true
 	require.NoError(t, e.converge())
-	e.reports.report(e.now.Add(-time.Minute), true)
+	require.Len(t, e.hetzner.byRole(t, roleNode), 3, "nodes")
+	e.reports.report(e.now.Add(-time.Minute), true, true, true)
 
 	silent := e.observe()
 	e.now = e.now.Add(time.Minute)
-	e.reports.report(e.now, false)
+	e.reports.report(e.now, true, false, true)
 	notReady := e.observe()
-	e.reports.report(e.now.Add(time.Second), true)
+	e.reports.report(e.now.Add(time.Second), true, true)
+	twoOfThree := e.observe()
+	e.reports.report(e.now.Add(2*time.Second), true, true, true)
 	ready := e.observe()
 
 	assert.Equal(t, contract.Unknown, silent.State)
-	assert.Contains(t, silent.StatusDetail, "no node report since the node's creation")
+	assert.Contains(t, silent.StatusDetail, "no node report since the last node's creation")
 	assert.Equal(t, contract.Unknown, notReady.State)
 	assert.Contains(t, notReady.StatusDetail, "not Ready")
+	assert.Equal(t, contract.Unknown, twoOfThree.State)
+	assert.Contains(t, twoOfThree.StatusDetail, "names 2 nodes, and the cluster has 3")
 	assert.Equal(t, contract.Present, ready.State, "detail: %s", ready.StatusDetail)
 }
 
@@ -404,7 +479,7 @@ func TestSubscribe_DeletesABuilderLeftBesideTheSnapshotWhoseDeleteFailed(t *test
 	require.NoError(t, e.converge())
 
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "a powered-off builder, whose disk holds every cluster key, outlived its snapshot")
-	assert.Len(t, e.hetzner.byRole(t, roleNode), 1, "nodes")
+	assert.Len(t, e.hetzner.byRole(t, roleNode), 3, "nodes")
 }
 
 func TestSubscribe_AnInstallThatFailsAfterTheGatewayExistsLeavesNothingTheNextEnsureRefuses(t *testing.T) {
@@ -450,7 +525,7 @@ func TestSubscribe_RefusesBeforeAnyServerWhenNoGatewayTypeCanBeOrdered(t *testin
 	err := e.converge()
 
 	require.Error(t, err)
-	for _, want := range []string{"server-unavailable", "cx23", "cpx22", "nbg1"} {
+	for _, want := range []string{"server-unavailable", "cx23", "cpx22", "fsn1"} {
 		assert.Contains(t, err.Error(), want)
 	}
 	assert.Empty(t, e.hetzner.serverSpecs, "servers created with no gateway type to order")
@@ -464,6 +539,7 @@ func TestSubscribe_TheClusterCarriesTheEnrolmentDigestAndTheClusterRepositoryWhi
 	first := p.post("subscribe")
 	p.settle(func() bool { return strings.HasPrefix(e.observe().StatusDetail, "the cluster has sent no node report") })
 	waiting := p.post("subscribe")
+	nodesWhileWaiting := len(e.hetzner.byRole(t, roleNode))
 	e.quietNode = false
 	final := p.settle(nil)
 
@@ -475,6 +551,7 @@ func TestSubscribe_TheClusterCarriesTheEnrolmentDigestAndTheClusterRepositoryWhi
 	}
 	assert.Nil(t, first.observed(resCluster), "the first subscribe, before the node exists, observed the cluster")
 	require.True(t, waiting.pending, "a subscribe before the node reports: %s", waiting.detail)
+	assert.Equal(t, 3, nodesWhileWaiting, "nodes while the cluster waits on their report")
 	cluster := waiting.observed(resCluster)
 	require.NotNil(t, cluster, "the subscribe after the node exists did not observe the cluster")
 	assert.Equal(t, contract.Unknown, cluster.State, "the cluster's state")
