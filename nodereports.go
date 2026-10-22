@@ -86,12 +86,7 @@ type reportedNode struct {
 // reportProblem names why the cluster has not yet reported every node Ready since the last of its nodes was created,
 // or "". A report naming fewer nodes than the cluster has servers for has not heard from every node.
 func reportProblem(ctx context.Context, d contract.Desired, nodes []hcServer) string {
-	var last time.Time
-	for _, n := range nodes {
-		if n.Created.After(last) {
-			last = n.Created
-		}
-	}
+	last := lastCreated(nodes)
 	since := last.UTC().Format(time.RFC3339)
 	reports, err := nodeReports.NodeReports(ctx, d, d.SubscriptionID)
 	if err != nil {
@@ -113,6 +108,16 @@ func reportProblem(ctx context.Context, d contract.Desired, nodes []hcServer) st
 		}
 	}
 	return ""
+}
+
+func lastCreated(servers []hcServer) time.Time {
+	var last time.Time
+	for _, s := range servers {
+		if s.Created.After(last) {
+			last = s.Created
+		}
+	}
+	return last
 }
 
 // newestReportSince returns the nodes of the newest report received after since, or nil when there is none.

@@ -70,7 +70,7 @@ const (
 // gatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.
 var gatewayServerTypes = []string{"cx23", "cpx22"}
 
-// location's load balancers join the network at fixed addresses before the gateway does, so neither takes the gateway's.
+// location holds the fixed addresses its load balancers join the network at before the gateway, so neither takes the gateway's.
 type location struct {
 	name, apiAddress, ingressAddress string
 }
@@ -289,8 +289,7 @@ func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool,
 			return c.api.DeleteServer(ctx, builder.ID)
 		}}, true, nil
 	case hasNode:
-		s, ok := missingNodeStep(c, site, snap)
-		return s, ok, nil
+		return missingNodeStep(c, site, snap)
 	case !hasGateway:
 		return installStep(c, site), true, nil
 	case gw.PrivateIPs[site.network.ID] == "":
@@ -304,8 +303,7 @@ func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool,
 	case gw.Status == serverOff:
 		return step{"power on the gateway", func(ctx context.Context) error { return c.api.PowerOnServer(ctx, gw.ID) }}, true, nil
 	case imaged:
-		s, ok := missingNodeStep(c, site, snap)
-		return s, ok, nil
+		return missingNodeStep(c, site, snap)
 	case hasSnapshot:
 		return step{}, false, nil
 	case hasBuilder:
@@ -379,18 +377,18 @@ func builderStep(ctx context.Context, c convergence, builder hcServer) (step, bo
 }
 
 // missingNodeStep creates the node of the first location that has none, one node a call, once the snapshot is available.
-func missingNodeStep(c convergence, site clusterSite, snap hcSnapshot) (step, bool) {
+func missingNodeStep(c convergence, site clusterSite, snap hcSnapshot) (step, bool, error) {
 	if snap.Status != snapshotAvailable {
-		return step{}, false
+		return step{}, false, nil
 	}
 	for _, loc := range clusterLocations {
 		if _, ok := c.state.nodeIn(loc.name); !ok {
 			return step{"create the node in " + loc.name + " from the snapshot", func(ctx context.Context) error {
 				return createNode(ctx, c, site, snap, loc.name)
-			}}, true
+			}}, true, nil
 		}
 	}
-	return step{}, false
+	return step{}, false, nil
 }
 
 // createNode boots a node from the cluster's own snapshot, with no user data and no public address, named for its location.
@@ -470,32 +468,32 @@ func ingressLoadBalancer(req ensureRequest, networkID int64, loc string) loadBal
 // loadBalancerStep is the next step the load balancer lacks. It is attached before its public interface is disabled or
 // its private target added, since Hetzner refuses either on a load balancer not yet attached to a network.
 func loadBalancerStep(c convergence, want loadBalancerSpec, address string) (step, bool) {
-	r := want.Labels[keyRole] + " load balancer in " + want.Location
+	what := want.Labels[keyRole] + " load balancer in " + want.Location
 	lb, ok := c.state.loadBalancerIn(role(want.Labels[keyRole]), want.Location)
 	switch {
 	case !ok:
-		return step{"create the " + r, func(ctx context.Context) error { return createLoadBalancer(ctx, c.api, want) }}, true
+		return step{"create the " + what, func(ctx context.Context) error { return createLoadBalancer(ctx, c.api, want) }}, true
 	case lb.PrivateIPs[want.NetworkID] == "":
-		return step{"attach the " + r + " to the network", func(ctx context.Context) error {
+		return step{"attach the " + what + " to the network", func(ctx context.Context) error {
 			if err := c.api.AttachLoadBalancerToNetwork(ctx, lb.ID, want.NetworkID, address); err != nil {
-				return fmt.Errorf("attaching the cluster's %s: %w", r, err)
+				return fmt.Errorf("attaching the cluster's %s: %w", what, err)
 			}
 			return nil
 		}}, true
 	case lb.PublicInterface && !want.PublicInterface:
-		return step{"disable the " + r + "'s public interface", func(ctx context.Context) error {
+		return step{"disable the " + what + "'s public interface", func(ctx context.Context) error {
 			return c.api.DisableLoadBalancerPublicInterface(ctx, lb.ID)
 		}}, true
 	}
 	for _, s := range want.Services {
 		if !slices.ContainsFunc(lb.Services, func(have lbService) bool { return have.ListenPort == s.ListenPort }) {
-			return step{fmt.Sprintf("add port %d to the %s", s.ListenPort, r), func(ctx context.Context) error {
+			return step{fmt.Sprintf("add port %d to the %s", s.ListenPort, what), func(ctx context.Context) error {
 				return c.api.AddLoadBalancerService(ctx, lb.ID, s)
 			}}, true
 		}
 	}
 	if !slices.Contains(lb.TargetSelectors, want.TargetSelector) {
-		return step{"target the nodes from the " + r, func(ctx context.Context) error {
+		return step{"target the nodes from the " + what, func(ctx context.Context) error {
 			return c.api.AddLoadBalancerTarget(ctx, lb.ID, want.TargetSelector)
 		}}, true
 	}

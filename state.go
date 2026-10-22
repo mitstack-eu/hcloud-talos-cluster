@@ -77,7 +77,7 @@ func (st clusterState) loadBalancerIn(r role, loc string) (hcLoadBalancer, bool)
 	return onlyOne(loadBalancersIn(st.loadBalancers[r], loc))
 }
 
-// Hetzner's own record of where a server or load balancer lives decides its location, never a name or a label.
+// serversIn reads a location from Hetzner's own record of the server, never from its name or a label.
 func serversIn(servers []hcServer, loc string) []hcServer {
 	return slices.DeleteFunc(slices.Clone(servers), func(s hcServer) bool { return s.Location != loc })
 }
