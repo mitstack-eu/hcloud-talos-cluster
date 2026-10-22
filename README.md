@@ -241,9 +241,8 @@ is listed by digest in the gateway's mirror. The node report also lists
 CloudNativePG's clusters, databases and roles in a read of its own, which
 fails apart from the nodes and Applications it reads.
 
-Talos applies these manifests when the node first boots and never changes
-them afterwards, since it only creates resources and never edits one that
-exists. The block has no call that re-applies a node's configuration. A
+Talos applies these manifests when the node first boots, and on each later
+boot it creates only what is missing. It never edits a resource that exists. The block has no call that re-applies a node's configuration. A
 cluster built from an older release therefore keeps the components it was
 built with, and only a new subscribe gets a newer kit's components.
 
