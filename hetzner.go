@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
@@ -49,6 +50,19 @@ type hetznerAPI interface {
 	// reads creating until it is done.
 	StartSnapshot(ctx context.Context, serverID int64, spec snapshotSpec) (hcSnapshot, error)
 	DeleteSnapshot(ctx context.Context, id int64) error
+	// ServerMetrics reads the server's CPU and disk series from start to end, a point every metricsStep.
+	ServerMetrics(ctx context.Context, id int64, start, end time.Time) (hcMetrics, error)
+}
+
+// hcMetrics is each series Hetzner answers by its name, such as disk.0.bandwidth.write in bytes a second.
+type hcMetrics struct {
+	Step   time.Duration
+	Series map[string][]metricPoint
+}
+
+type metricPoint struct {
+	At    time.Time
+	Value float64
 }
 
 // hcServer is a server as the block reads it, with PrivateIPs keyed by network id.
@@ -165,6 +179,8 @@ const (
 	healthCheckInterval = 15 * time.Second
 	healthCheckTimeout  = 10 * time.Second
 	healthCheckRetries  = 3
+
+	metricsStep = 60 * time.Second
 )
 
 // hetznerEndpoint is fixed at build time and never taken from a request.
@@ -533,6 +549,30 @@ func (a *hcloudAPI) DeleteSnapshot(ctx context.Context, id int64) error {
 		return fmt.Errorf("deleting snapshot %d: %w", id, err)
 	}
 	return nil
+}
+
+func (a *hcloudAPI) ServerMetrics(ctx context.Context, id int64, start, end time.Time) (hcMetrics, error) {
+	m, _, err := a.client.Server.GetMetrics(ctx, &hcloud.Server{ID: id}, hcloud.ServerGetMetricsOpts{
+		Types: []hcloud.ServerMetricType{hcloud.ServerMetricCPU, hcloud.ServerMetricDisk},
+		Start: start, End: end, Step: int(metricsStep.Seconds()),
+	})
+	if err != nil {
+		return hcMetrics{}, fmt.Errorf("reading the metrics of server %d: %w", id, err)
+	}
+	out := hcMetrics{Step: time.Duration(m.Step * float64(time.Second)), Series: map[string][]metricPoint{}}
+	if out.Step <= 0 {
+		out.Step = metricsStep
+	}
+	for name, values := range m.TimeSeries {
+		for _, v := range values {
+			value, err := strconv.ParseFloat(v.Value, 64)
+			if err != nil {
+				return hcMetrics{}, fmt.Errorf("reading the %s metric of server %d: %w", name, id, err)
+			}
+			out.Series[name] = append(out.Series[name], metricPoint{At: time.Unix(int64(v.Timestamp), 0).UTC(), Value: value})
+		}
+	}
+	return out, nil
 }
 
 func parseCIDR(cidr string) (*net.IPNet, error) {

@@ -171,7 +171,7 @@ func observeCluster(ctx context.Context, d contract.Desired) (contract.Observati
 			StatusDetail: "no server, load balancer, firewall, network or snapshot carries this subscription's labels, and " + repo.describe(),
 		}, nil
 	}
-	problems := st.problems()
+	problems := st.problems(ctx, api)
 	if repo.state != repoPresent {
 		problems = append(problems, repo.describe())
 	}
@@ -248,7 +248,7 @@ func (st clusterState) present(subID, repoURL string) contract.Observation {
 }
 
 // problems names every way the Hetzner half of the cluster falls short of present.
-func (st clusterState) problems() []string {
+func (st clusterState) problems(ctx context.Context, api hetznerAPI) []string {
 	missing := st.duplicates()
 	if len(missing) > 0 {
 		return missing
@@ -262,7 +262,7 @@ func (st clusterState) problems() []string {
 		missing = append(missing, "no firewall carries this subscription's labels")
 	}
 	if builder, ok := st.server(roleBuilder); ok {
-		missing = append(missing, builder.buildDetail())
+		missing = append(missing, builder.buildDetail(ctx, api))
 	}
 	if snap, ok := st.snapshot(); !ok {
 		missing = append(missing, "no snapshot of the cluster's image carries this subscription's labels")
@@ -282,16 +282,16 @@ func (st clusterState) problems() []string {
 }
 
 // buildDetail says where the builder stands, judged against buildDeadline as builderStep judges it.
-func (b hcServer) buildDetail() string {
+func (b hcServer) buildDetail(ctx context.Context, api hetznerAPI) string {
 	created := b.Created.UTC().Format(time.RFC3339)
-	switch {
-	case b.Status != serverRunning:
+	if b.Status != serverRunning {
 		return fmt.Sprintf("builder %d, created at %s, is %s", b.ID, created, b.Status)
-	case clock().Sub(b.Created) >= buildDeadline:
-		return fmt.Sprintf("builder %d, created at %s, did not power itself off within %s", b.ID, created, buildDeadline)
-	default:
-		return fmt.Sprintf("builder %d, created at %s, is building the cluster's image", b.ID, created)
 	}
+	state := "is building the cluster's image"
+	if clock().Sub(b.Created) >= buildDeadline {
+		state = fmt.Sprintf("did not power itself off within %s", buildDeadline)
+	}
+	return fmt.Sprintf("builder %d, created at %s, %s; %s", b.ID, created, state, readBuilderMetrics(ctx, api, b).summary())
 }
 
 func (st clusterState) gatewayProblems(network hcNetwork, firewall hcFirewall) []string {

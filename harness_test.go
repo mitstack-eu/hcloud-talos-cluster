@@ -69,6 +69,15 @@ type fakeHetzner struct {
 	failAttach map[role]error
 	// soldOut holds the server types no location can order.
 	soldOut []string
+	// metrics answers each server's metrics read; failMetrics, when set, fails every read, and metricsReads records each one.
+	metrics      map[int64]hcMetrics
+	failMetrics  error
+	metricsReads []metricsRead
+}
+
+type metricsRead struct {
+	id         int64
+	start, end time.Time
 }
 
 func newFakeHetzner(now func() time.Time) *fakeHetzner {
@@ -77,7 +86,7 @@ func newFakeHetzner(now func() time.Time) *fakeHetzner {
 		servers: map[int64]*hcServer{}, userData: map[int64]string{}, networks: map[int64]*hcNetwork{},
 		firewalls: map[int64]*hcFirewall{}, loadBalancers: map[int64]*hcLoadBalancer{}, snapshots: map[int64]*hcSnapshot{},
 		started: map[int64]time.Time{}, imaging: map[int64]time.Time{}, failCreate: map[role]error{}, failLBStep: map[string]error{},
-		failAttach: map[role]error{},
+		failAttach: map[role]error{}, metrics: map[int64]hcMetrics{},
 	}
 }
 
@@ -234,6 +243,33 @@ func (f *fakeHetzner) PowerOnServer(_ context.Context, id int64) error {
 		s.Status = serverOff
 	}
 	return nil
+}
+
+func (f *fakeHetzner) ServerMetrics(_ context.Context, id int64, start, end time.Time) (hcMetrics, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.metricsReads = append(f.metricsReads, metricsRead{id: id, start: start, end: end})
+	if f.failMetrics != nil {
+		return hcMetrics{}, f.failMetrics
+	}
+	return f.metrics[id], nil
+}
+
+// builderMetrics gives the builder the series Hetzner would answer, a point a minute from a minute after its creation.
+func (f *fakeHetzner) builderMetrics(t *testing.T, series map[string][]float64) hcServer {
+	t.Helper()
+	builders := f.byRole(t, roleBuilder)
+	require.Len(t, builders, 1, "want one builder to give metrics")
+	m := hcMetrics{Step: time.Minute, Series: map[string][]metricPoint{}}
+	for name, values := range series {
+		for i, v := range values {
+			m.Series[name] = append(m.Series[name], metricPoint{At: builders[0].Created.Add(time.Duration(i+1) * time.Minute), Value: v})
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.metrics[builders[0].ID] = m
+	return builders[0]
 }
 
 func (f *fakeHetzner) DeleteServer(_ context.Context, id int64) error {
@@ -767,6 +803,18 @@ func (e *env) building() bool {
 	builders := e.hetzner.byRole(e.t, roleBuilder)
 	return len(builders) == 1 && builders[0].Status == serverRunning
 }
+
+// buildingBuilder settles a subscription until its builder runs a build that never ends.
+func (e *env) buildingBuilder() *engine {
+	e.t.Helper()
+	e.buildTakes = 0
+	p := e.engine()
+	p.settle(func() bool { return e.building() })
+	require.True(e.t, e.building(), "the builder never started its build")
+	return p
+}
+
+const mib = 1 << 20
 
 // subscribe settles the subscription as the platform does and returns what Observe then reads.
 func (e *env) subscribe() contract.Observation {

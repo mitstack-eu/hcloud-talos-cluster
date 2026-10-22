@@ -21,13 +21,13 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.2.6
+  version: 0.2.7
   releaseClass: correctness-fix
   releaseNote: >-
-    The cluster resource carries the enrolment digest and the cluster
-    repository as its outputs while it waits on its node report, and the
-    gateway resource carries none, so the values a new node's enrolment is
-    judged against come from the resource that provides the cluster.
+    The build progress and the image-build-failed refusal report the
+    builder's Hetzner CPU and disk metrics since its creation, and the
+    refusal adds when the disk last moved and the CPU was last busy, so a
+    build that stalls shows where it stopped.
   description: >
     Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
     or hel1, booted from its own image with no user data, with Argo CD

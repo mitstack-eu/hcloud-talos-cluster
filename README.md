@@ -140,6 +140,46 @@ authority went with it. Unsubscribe deletes every server, load balancer,
 snapshot, firewall and network, then the repository when it carries the
 subscription's mark.
 
+## What a build reports while it runs and when it fails
+
+No session can watch the builder, and its build script discards imager's
+output, since that output prints every key of the cluster. Hetzner's metrics
+of the builder are therefore the view of a running build. `readBuilderMetrics`
+in `metrics.go` reads the `cpu` and `disk` types through `ServerMetrics` in
+`hetzner.go`, a point a minute from the builder's creation to now.
+
+While the builder runs, the cluster resource's validate detail ends with a
+summary of those metrics, which `buildDetail` in `observe.go` words. It gives
+the CPU over the last minute, the bytes written to disk over the last minute,
+and the bytes written to disk since the builder's creation. This detail comes
+from the tests:
+
+```text
+builder 1006, created at 2026-10-21T12:02:45Z, is building the cluster's image; Hetzner reads its CPU at 118.7% over the last minute, 120.0 MiB written to disk over the last minute and 180.0 MiB since its creation
+```
+
+Hetzner's CPU figure can pass 100% on a server with several cores. A cpx52
+builder in the proof project read 118.7% while imager ran.
+
+The `image-build-failed` refusal from `builderStep` in `resource.go` carries
+the same summary. It adds when the disk last read or wrote anything, and when
+the CPU was last above 10%, a level an idle server stays under. The bytes
+written since creation tell a builder that never wrote its 4.2 GiB image from
+one that wrote it and stopped later:
+
+```text
+refused:image-build-failed: the builder did not power itself off within 30m0s of its creation, so the cluster's image was not built and the builder is deleted; Hetzner reads its CPU at 2.0% over the last minute, 0 B written to disk over the last minute and 120.0 MiB since its creation; its disk last moved at 2026-10-21T12:03:45Z; its CPU was last above 10% at 2026-10-21T12:05:45Z; unsubscribe and subscribe again to rebuild the cluster
+```
+
+A metrics read that fails never fails validate or the refusal. The text then
+says that the builder's Hetzner metrics could not be read. Before Hetzner
+holds a point for the builder, it says that Hetzner holds no metrics for the
+builder yet.
+
+Neither text carries network figures. Hetzner answers every network series
+empty for a server whose only network is private, which the builder's is, so
+the block reads CPU and disk alone.
+
 ## When each output is published
 
 Each subscribe and validate answer carries one outcome per declared resource,
@@ -196,7 +236,7 @@ shellcheck scripts/*.sh
 
 | Test file | What it proves |
 |---|---|
-| `subscribe_test.go` | A one-node cluster in each of the three locations, the node with no user data, only the gateway with a public address, every refusal, and the cluster's enrolment outputs while it waits on its node report |
+| `subscribe_test.go` | A one-node cluster in each of the three locations, the node with no user data, only the gateway with a public address, every refusal, the builder's metrics in the build progress and the `image-build-failed` refusal, and the cluster's enrolment outputs while it waits on its node report |
 | `redrive_test.go` | One subscribe reaching the node through the platform's re-drives, validate asking for one exactly when a subscribe has a step to take, at most one Hetzner action waited per call, and a doubled re-drive making nothing twice |
 | `userdata_test.go` | The builder's embedded configuration, its user data within Hetzner's limit, and the gateway's two cloud-config parts |
 | `scripts_test.go` | The build, the first-node bootstrap and the cluster's credential calls |
