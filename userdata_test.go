@@ -9,9 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
-	"fmt"
 	"io"
-	"maps"
 	"mime"
 	"mime/multipart"
 	"net/mail"
@@ -109,6 +107,21 @@ func subscribedOnce(t *testing.T) *env {
 	return e
 }
 
+func builderConfiguration(t *testing.T, e *env) []map[string]any {
+	t.Helper()
+	config := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]).file(t, builderConfigPath)
+	return testutil.Documents(t, []byte(config.Content))
+}
+
+func inlineManifests(t *testing.T, config []map[string]any) map[string][]map[string]any {
+	t.Helper()
+	manifests := map[string][]map[string]any{}
+	for _, doc := range testutil.Kind(config, "KubeInlineManifestConfig") {
+		manifests[doc["name"].(string)] = testutil.Documents(t, []byte(doc["manifest"].(string)))
+	}
+	return manifests
+}
+
 func TestBuilder_EmbedsAConfigurationThatCarriesTheReportTheCredentialsAndTheApplication(t *testing.T) {
 	e := subscribedOnce(t)
 	builder := e.hetzner.byRole(t, roleBuilder)[0]
@@ -135,12 +148,8 @@ func TestBuilder_EmbedsAConfigurationThatCarriesTheReportTheCredentialsAndTheApp
 
 func TestBuilder_TheApplicationSyncsTheClusterRepositoryAndTheEnrolmentNamesThePlatform(t *testing.T) {
 	e := subscribedOnce(t)
-	config := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]).file(t, builderConfigPath)
 
-	manifests := map[string][]map[string]any{}
-	for _, doc := range testutil.Kind(testutil.Documents(t, []byte(config.Content)), "KubeInlineManifestConfig") {
-		manifests[doc["name"].(string)] = testutil.Documents(t, []byte(doc["manifest"].(string)))
-	}
+	manifests := inlineManifests(t, builderConfiguration(t, e))
 
 	apps := testutil.Kind(manifests["mitstack-cluster-application"], "Application")
 	require.Len(t, apps, 2, "Applications")
@@ -190,29 +199,13 @@ func TestGateway_StartsTheMirrorBesideItsFirewallAndPassesPullsThroughIt(t *test
 
 func TestBuilder_TheNodeRoutesThroughTheNetworksRouterAndKeepsItsDHCPAddress(t *testing.T) {
 	e := subscribedOnce(t)
-	config := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]).file(t, builderConfigPath)
 
-	docs := testutil.Documents(t, []byte(config.Content))
+	docs := builderConfiguration(t, e)
 
 	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "LinkConfig", "name": "eth0",
 		"routes": []any{map[string]any{"gateway": routerAddress}}}}, testutil.Kind(docs, "LinkConfig"), "the node's default route")
 	assert.Equal(t, []map[string]any{{"apiVersion": "v1alpha1", "kind": "DHCPv4Config", "name": "eth0"}}, testutil.Kind(docs, "DHCPv4Config"),
 		"the node's DHCP, which its LinkConfig would otherwise stop")
-}
-
-func builderConfiguration(t *testing.T, e *env) []map[string]any {
-	t.Helper()
-	config := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]).file(t, builderConfigPath)
-	return testutil.Documents(t, []byte(config.Content))
-}
-
-func inlineManifests(t *testing.T, config []map[string]any) map[string][]map[string]any {
-	t.Helper()
-	manifests := map[string][]map[string]any{}
-	for _, doc := range testutil.Kind(config, "KubeInlineManifestConfig") {
-		manifests[doc["name"].(string)] = testutil.Documents(t, []byte(doc["manifest"].(string)))
-	}
-	return manifests
 }
 
 func TestBuilder_TheClusterRunsKyvernoAndCloudNativePGFromManifestsTheGatewayServes(t *testing.T) {
@@ -247,20 +240,47 @@ func TestBuilder_TheClusterAdmitsOnlyLabelledPodsIsolatesEachAppNamespaceAndAdmi
 	}
 }
 
-// podTemplates returns each workload's pod template in docs, keyed by the workload's namespace and name.
-func podTemplates(t *testing.T, docs []map[string]any) map[string]any {
+type workload struct {
+	namespace, name string
+	podLabels       map[string]any
+}
+
+func workloads(t *testing.T, docs []map[string]any) []workload {
 	t.Helper()
-	templates := map[string]any{}
+	var found []workload
 	for _, doc := range docs {
-		key := fmt.Sprintf("%v/%v", testutil.Field(t, doc, "metadata", "namespace"), testutil.Field(t, doc, "metadata", "name"))
+		var template any
 		switch doc["kind"] {
 		case "Job", "Deployment", "DaemonSet", "StatefulSet":
-			templates[key] = testutil.Field(t, doc, "spec", "template")
+			template = testutil.Field(t, doc, "spec", "template")
 		case "CronJob":
-			templates[key] = testutil.Field(t, doc, "spec", "jobTemplate", "spec", "template")
+			template = testutil.Field(t, doc, "spec", "jobTemplate", "spec", "template")
+		default:
+			continue
+		}
+		metadata, _ := template.(map[string]any)["metadata"].(map[string]any)
+		labels, _ := metadata["labels"].(map[string]any)
+		found = append(found, workload{
+			namespace: testutil.Field(t, doc, "metadata", "namespace").(string),
+			name:      testutil.Field(t, doc, "metadata", "name").(string),
+			podLabels: labels,
+		})
+	}
+	return found
+}
+
+// exemptNamespaces are the namespaces a policy's namespaceSelector leaves out by name.
+func exemptNamespaces(t *testing.T, policy map[string]any) []string {
+	t.Helper()
+	var exempt []string
+	for _, expr := range testutil.Field(t, policy, "spec", "matchConstraints", "namespaceSelector", "matchExpressions").([]any) {
+		if m := expr.(map[string]any); m["key"] == "kubernetes.io/metadata.name" && m["operator"] == "NotIn" {
+			for _, ns := range m["values"].([]any) {
+				exempt = append(exempt, ns.(string))
+			}
 		}
 	}
-	return templates
+	return exempt
 }
 
 func TestBuilder_TheBlocksOwnPodsPassTheAppLabelPolicyAndKeepTheirEgress(t *testing.T) {
@@ -268,32 +288,19 @@ func TestBuilder_TheBlocksOwnPodsPassTheAppLabelPolicyAndKeepTheirEgress(t *test
 	manifests := inlineManifests(t, builderConfiguration(t, e))
 	labelPolicies := testutil.Kind(manifests["mitstack-require-app-label"], "ValidatingPolicy")
 	require.Len(t, labelPolicies, 1, "the app label policy")
-	var exempt []string
-	for _, expr := range testutil.Field(t, labelPolicies[0], "spec", "matchConstraints", "namespaceSelector", "matchExpressions").([]any) {
-		if m := expr.(map[string]any); m["key"] == "kubernetes.io/metadata.name" && m["operator"] == "NotIn" {
-			for _, ns := range m["values"].([]any) {
-				exempt = append(exempt, ns.(string))
-			}
-		}
-	}
 	denyPolicies := testutil.Kind(manifests["mitstack-generate-default-deny"], "GeneratingPolicy")
 	require.Len(t, denyPolicies, 1, "the default-deny policy")
+
+	exempt := exemptNamespaces(t, labelPolicies[0])
 	denyCondition := testutil.Field(t, denyPolicies[0], "spec", "matchConditions", "0", "expression").(string)
+	own := append(workloads(t, manifests["mitstack-node-report"]), workloads(t, manifests["mitstack-cluster-tokens"])...)
 
-	templates := map[string]any{}
-	for _, name := range []string{"mitstack-node-report", "mitstack-cluster-tokens"} {
-		maps.Copy(templates, podTemplates(t, manifests[name]))
-	}
-
-	require.NotEmpty(t, templates, "the block's workloads")
-	for key, template := range templates {
-		namespace := strings.Split(key, "/")[0]
-		metadata, _ := template.(map[string]any)["metadata"].(map[string]any)
-		labels, _ := metadata["labels"].(map[string]any)
-		if labels["mitstack.dev/app"] == nil {
-			assert.Contains(t, exempt, namespace, "%s's pods carry no mitstack.dev/app label, so their namespace must be exempt", key)
+	require.NotEmpty(t, own, "the block's workloads")
+	for _, w := range own {
+		if w.podLabels["mitstack.dev/app"] == nil {
+			assert.Contains(t, exempt, w.namespace, "%s/%s's pods carry no mitstack.dev/app label, so their namespace must be exempt", w.namespace, w.name)
 		}
-		assert.Contains(t, denyCondition, "'"+namespace+"'", "%s reaches the platform, so its namespace must get no default-deny", key)
+		assert.Contains(t, denyCondition, "'"+w.namespace+"'", "%s/%s reaches the platform, so its namespace must get no default-deny", w.namespace, w.name)
 	}
 }
 
