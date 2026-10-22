@@ -2,8 +2,9 @@
 # Builds the cluster's Talos disk image on the builder server with imager,
 # writes it over the builder's own disk and powers the builder off, so the
 # block can snapshot that disk for the node to boot from. It freezes the root
-# filesystem first and runs the overwrite from copies in a tmpfs, so nothing
-# writes to or runs from the disk once the image starts landing on it.
+# filesystem first and runs the overwrite from copies in a tmpfs, so once the
+# image starts landing, nothing it runs writes to or runs from that disk. A
+# failure in that overwrite ends it before the power-off.
 # Usage: build-image.sh <imager image by digest> <machine configuration> <network router>
 #   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
 #   BUILD_RESOLV_CONF and BUILD_PROC default to /mnt/mitstack-build,
@@ -69,7 +70,9 @@ stage() {
   program=$(command -v "$1")
   cp -L "$program" "$staged/"
   ldd "$program" | while read -r name arrow library _; do
-    if [ "$arrow" = "=>" ] && [ "${library#/}" != "$library" ]; then
+    if [ "$arrow" = "=>" ] && [ "$library" = "not" ]; then
+      fail "ldd could not resolve $name for $program"
+    elif [ "$arrow" = "=>" ] && [ "${library#/}" != "$library" ]; then
       cp -L "$library" "$staged/"
     elif [ "${name#/}" != "$name" ]; then
       cp -L "$name" "$staged/ld.so"
@@ -77,8 +80,7 @@ stage() {
   done
 }
 
-# overwrite_disk is the final stage, run by the tmpfs bash. It runs zstd and dd through the tmpfs loader and prints
-# nothing, since a write to the frozen disk blocks. A failure exits before the power-off, leaving the builder running.
+# overwrite_disk is the final stage, run by the tmpfs bash, and prints nothing, since a write to the frozen disk blocks.
 overwrite_disk() {
   local staged=$1 image=$2 disk=$3 proc=$4
   exec > /dev/null 2>&1
