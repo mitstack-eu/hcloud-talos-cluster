@@ -24,8 +24,8 @@ const testImager = "ghcr.io/siderolabs/imager:v1.14.4@sha256:0123456789abcdef012
 // imagerPeakBytes is the most imager v1.14.4 held in /out building an hcloud image: its whole raw disk, before compressing it.
 const imagerPeakBytes = 4426580 * 1024
 
-// buildFakes stand in for the builder's commands. mount records each tmpfs and its size, and docker run fails as imager
-// does when /out lies on a tmpfs smaller than imagerPeakBytes, else leaves one image in the out directory it mounts.
+// buildFakes stand in for the builder's commands, mount recording each tmpfs and docker run failing as imager does when
+// /out lies on a tmpfs smaller than imagerPeakBytes.
 func buildFakes(imagerExit int) map[string]string {
 	exit := strconv.Itoa(imagerExit)
 	return map[string]string{
@@ -119,6 +119,11 @@ func TestBuildImage_WritesTheDiskFromATmpfsNeverFromTheDiskItOverwrites(t *testi
 	assert.True(t, slices.ContainsFunc(run.tmpfsTargets(t), func(target string) bool {
 		return strings.HasPrefix(reads[0], target+"/")
 	}), "dd writes the image read from %s, outside every tmpfs", reads[0])
+	calls := run.tools.Calls(t)
+	sync := slices.Index(calls, "sync ")
+	dd := slices.IndexFunc(calls, func(call string) bool { return strings.HasPrefix(call, "dd ") })
+	assert.True(t, sync >= 0 && sync < dd, "the removed output is synced before dd overwrites the disk: %v", calls)
+	assert.NoDirExists(t, filepath.Join(run.dir, "out"), "imager's output outlives the build on the disk dd overwrites")
 }
 
 func TestBuildImage_AFailedImagerWritesNothingAndKeepsTheBuilderRunning(t *testing.T) {
