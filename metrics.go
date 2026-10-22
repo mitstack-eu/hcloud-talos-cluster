@@ -28,14 +28,18 @@ func readBuilderMetrics(ctx context.Context, api hetznerAPI, builder hcServer) b
 	return builderMetrics{read: err == nil, hcMetrics: m}
 }
 
+func (m builderMetrics) held() bool {
+	return m.read && len(m.Series[seriesCPU])+len(m.Series[seriesDiskWrite]) > 0
+}
+
 func (m builderMetrics) summary() string {
-	cpu, writes := m.Series[seriesCPU], m.Series[seriesDiskWrite]
 	switch {
 	case !m.read:
 		return "the builder's Hetzner metrics could not be read"
-	case len(cpu) == 0 && len(writes) == 0:
+	case !m.held():
 		return "Hetzner holds no metrics for the builder yet"
 	}
+	cpu, writes := m.Series[seriesCPU], m.Series[seriesDiskWrite]
 	var written float64
 	for _, p := range writes {
 		written += p.Value * m.Step.Seconds()
@@ -46,17 +50,18 @@ func (m builderMetrics) summary() string {
 
 // stall adds to the summary when the disk last moved and when CPU was last busy.
 func (m builderMetrics) stall() string {
-	if !m.read || len(m.Series[seriesCPU])+len(m.Series[seriesDiskWrite]) == 0 {
+	if !m.held() {
 		return m.summary()
 	}
 	disk := "its disk never moved"
-	read, readMoved := lastAbove(m.Series[seriesDiskRead], 0)
-	write, writeMoved := lastAbove(m.Series[seriesDiskWrite], 0)
-	if readMoved || writeMoved {
-		if write.After(read) {
-			read = write
+	readAt, read := lastAbove(m.Series[seriesDiskRead], 0)
+	writeAt, wrote := lastAbove(m.Series[seriesDiskWrite], 0)
+	if read || wrote {
+		movedAt := writeAt
+		if readAt.After(writeAt) {
+			movedAt = readAt
 		}
-		disk = "its disk last moved at " + read.UTC().Format(time.RFC3339)
+		disk = "its disk last moved at " + movedAt.UTC().Format(time.RFC3339)
 	}
 	cpu := fmt.Sprintf("its CPU was never above %d%%", busyCPUPercent)
 	if at, ok := lastAbove(m.Series[seriesCPU], busyCPUPercent); ok {

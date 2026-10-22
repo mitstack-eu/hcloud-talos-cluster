@@ -284,16 +284,14 @@ func (st clusterState) problems(ctx context.Context, api hetznerAPI) []string {
 // buildDetail says where the builder stands, judged against buildDeadline as builderStep judges it.
 func (b hcServer) buildDetail(ctx context.Context, api hetznerAPI) string {
 	created := b.Created.UTC().Format(time.RFC3339)
-	switch {
-	case b.Status != serverRunning:
+	if b.Status != serverRunning {
 		return fmt.Sprintf("builder %d, created at %s, is %s", b.ID, created, b.Status)
-	case clock().Sub(b.Created) >= buildDeadline:
-		return fmt.Sprintf("builder %d, created at %s, did not power itself off within %s; %s",
-			b.ID, created, buildDeadline, readBuilderMetrics(ctx, api, b).summary())
-	default:
-		return fmt.Sprintf("builder %d, created at %s, is building the cluster's image; %s",
-			b.ID, created, readBuilderMetrics(ctx, api, b).summary())
 	}
+	state := "is building the cluster's image"
+	if clock().Sub(b.Created) >= buildDeadline {
+		state = fmt.Sprintf("did not power itself off within %s", buildDeadline)
+	}
+	return fmt.Sprintf("builder %d, created at %s, %s; %s", b.ID, created, state, readBuilderMetrics(ctx, api, b).summary())
 }
 
 func (st clusterState) gatewayProblems(network hcNetwork, firewall hcFirewall) []string {
