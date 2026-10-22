@@ -798,6 +798,13 @@ type answer struct {
 	pending, redrive bool
 	detail           string
 	waits            int
+	outputs          map[string]string
+	resources        map[string]contract.ResourceOutcome
+}
+
+// observed is what the answer's observe of the named resource returned, or nil when the call never reached it.
+func (a answer) observed(name string) *contract.CallOutcome {
+	return a.resources[name].Observe
 }
 
 func (a answer) err() error {
@@ -835,9 +842,12 @@ func (p *engine) post(operation string) answer {
 	var doc struct {
 		Pending, Redrive    bool
 		StatusDetail, Error string
+		Outputs             map[string]string
+		Resources           map[string]contract.ResourceOutcome
 	}
 	require.NoError(p.e.t, json.Unmarshal(w.Body.Bytes(), &doc), "the %s answer", operation)
-	a := answer{op: operation, status: w.Code, pending: doc.Pending, redrive: doc.Redrive, detail: doc.StatusDetail + doc.Error, waits: p.e.hetzner.waits - waits}
+	a := answer{op: operation, status: w.Code, pending: doc.Pending, redrive: doc.Redrive, detail: doc.StatusDetail + doc.Error, waits: p.e.hetzner.waits - waits,
+		outputs: doc.Outputs, resources: doc.Resources}
 	p.posted = append(p.posted, a)
 	return a
 }
