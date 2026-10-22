@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -338,58 +339,78 @@ func TestSubscribe_RefusesBeforeAnyServerWhenNoGatewayTypeCanBeOrdered(t *testin
 	assert.Empty(t, e.hetzner.serverSpecs, "servers created with no gateway type to order")
 }
 
-func TestSubscribe_TheGatewayCarriesTheEnrolmentDigestAndTheClusterRepositoryWhileTheClusterWaitsOnItsNode(t *testing.T) {
+func TestSubscribe_TheClusterCarriesTheEnrolmentDigestAndTheClusterRepositoryWhileItWaitsOnItsNodeReport(t *testing.T) {
 	e := newEnv(t)
+	e.quietNode = true
 	p := e.engine()
 
 	first := p.post("subscribe")
-	p.settle(func() bool { return len(e.hetzner.byRole(t, roleGateway)) == 1 })
-	gateway := e.hetzner.byRole(t, roleGateway)[0]
+	p.settle(func() bool { return strings.HasPrefix(e.observe().StatusDetail, "the cluster has sent no node report") })
 	waiting := p.post("subscribe")
+	e.quietNode = false
 	final := p.settle(nil)
 
+	gateway := e.hetzner.byRole(t, roleGateway)[0]
 	require.NotEmpty(t, gateway.Labels[keyEnrolmentSHA256], "the gateway's enrolment digest label")
 	want := map[string]string{
 		"enrolmentTokenSha256": gateway.Labels[keyEnrolmentSHA256],
 		"clusterRepoUrl":       "https://github.com/" + e.repo(),
 	}
-	assert.Nil(t, first.observed(resGateway), "the first subscribe, before the gateway exists, observed it")
-	require.True(t, waiting.pending, "a subscribe before the node exists: %s", waiting.detail)
-	require.NotNil(t, waiting.observed(resGateway), "the subscribe after the gateway exists did not observe it")
+	assert.Nil(t, first.observed(resCluster), "the first subscribe, before the node exists, observed the cluster")
+	require.True(t, waiting.pending, "a subscribe before the node reports: %s", waiting.detail)
+	cluster := waiting.observed(resCluster)
+	require.NotNil(t, cluster, "the subscribe after the node exists did not observe the cluster")
+	assert.Equal(t, contract.Unknown, cluster.State, "the cluster's state")
+	assert.Contains(t, cluster.StatusDetail, "no node report", "the cluster's detail")
+	assert.Equal(t, want, cluster.Outputs, "the cluster's outputs while it waits on its node report")
+	require.NotNil(t, waiting.observed(resGateway), "the subscribe after the node exists did not observe the gateway")
 	assert.Equal(t, contract.Present, waiting.observed(resGateway).State, "the gateway's state")
-	assert.Equal(t, want, waiting.observed(resGateway).Outputs, "the gateway's outputs while the cluster waits on its node")
+	assert.Empty(t, waiting.observed(resGateway).Outputs, "the gateway's outputs while the cluster waits on its node report")
 	require.False(t, final.pending, "the last answer: %s", final.detail)
-	assert.Equal(t, want, final.observed(resGateway).Outputs, "the gateway's outputs once the cluster is present")
+	assert.Empty(t, final.observed(resGateway).Outputs, "the gateway's outputs once the cluster is present")
 	for name, value := range want {
+		assert.Equal(t, value, final.observed(resCluster).Outputs[name], "the cluster's output %s once it is present", name)
 		assert.Equal(t, value, final.outputs[name], "the cluster's provided output %s", name)
 	}
 }
 
-func TestObserve_AGatewayWhoseRepositoryCannotBeNamedCarriesNeitherOutputAndSaysWhy(t *testing.T) {
+func TestObserve_AWaitingClusterWhoseRepositoryCannotBeNamedCarriesNeitherOutputAndSaysWhy(t *testing.T) {
 	e := newEnv(t)
 	require.NoError(t, e.converge())
 	require.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways")
 	d := e.desired()
 	delete(d.Secrets, "github")
 
-	obs, err := observers()[resGateway].ObserveResource(e.ctx(), contract.ResourceRef{Desired: d})
+	obs, err := observers()[resCluster].ObserveResource(e.ctx(), contract.ResourceRef{Desired: d})
 
 	require.NoError(t, err)
-	assert.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
-	assert.Empty(t, obs.Outputs, "the gateway's outputs")
+	assert.Equal(t, contract.Unknown, obs.State, "detail: %s", obs.StatusDetail)
+	assert.Empty(t, obs.Outputs, "the cluster's outputs")
 	assert.Contains(t, obs.StatusDetail, "secrets.github.token is empty")
 }
 
-func TestObserve_AGatewayWithoutItsDigestLabelCarriesNeitherOutputAndSaysWhy(t *testing.T) {
+func TestObserve_AWaitingClusterWhoseGatewayLacksItsDigestLabelCarriesNeitherOutputAndSaysWhy(t *testing.T) {
 	e := newEnv(t)
 	require.NoError(t, e.converge())
 	gateway := e.hetzner.byRole(t, roleGateway)[0]
 	delete(e.hetzner.servers[gateway.ID].Labels, keyEnrolmentSHA256)
 
-	obs, err := observers()[resGateway].ObserveResource(e.ctx(), contract.ResourceRef{Desired: e.desired()})
+	obs, err := observers()[resCluster].ObserveResource(e.ctx(), contract.ResourceRef{Desired: e.desired()})
 
 	require.NoError(t, err)
-	assert.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
-	assert.Empty(t, obs.Outputs, "the gateway's outputs")
+	assert.Equal(t, contract.Unknown, obs.State, "detail: %s", obs.StatusDetail)
+	assert.Empty(t, obs.Outputs, "the cluster's outputs")
 	assert.Contains(t, obs.StatusDetail, "no "+keyEnrolmentSHA256+" label")
+}
+
+func TestObserve_AWaitingClusterWithoutItsRepositoryCarriesNeitherOutput(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, e.converge())
+	e.github.remove(e.repo())
+
+	obs, err := observers()[resCluster].ObserveResource(e.ctx(), contract.ResourceRef{Desired: e.desired()})
+
+	require.NoError(t, err)
+	assert.Equal(t, contract.Unknown, obs.State, "detail: %s", obs.StatusDetail)
+	assert.Empty(t, obs.Outputs, "the cluster's outputs")
 }

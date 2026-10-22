@@ -660,7 +660,9 @@ type env struct {
 	params  map[string]string
 	// buildTakes and imageTakes are how long the builder and the snapshot run once started; a zero build never ends.
 	buildTakes, imageTakes time.Duration
-	eng                    *engine
+	// quietNode holds back the node's report, so the cluster waits on it.
+	quietNode bool
+	eng       *engine
 }
 
 type envOption func(*env)
@@ -755,7 +757,7 @@ func (e *env) observe() contract.Observation {
 // progress plays what Hetzner, the builder and the node do on their own while the platform waits.
 func (e *env) progress() {
 	e.hetzner.advance(e.buildTakes, e.imageTakes)
-	if len(e.hetzner.byRole(e.t, roleNode)) == 1 && len(e.reports.reports) == 0 {
+	if !e.quietNode && len(e.hetzner.byRole(e.t, roleNode)) == 1 && len(e.reports.reports) == 0 {
 		e.reports.report(e.now, true)
 	}
 }
