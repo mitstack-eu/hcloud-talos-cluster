@@ -71,6 +71,7 @@ write_disk() {
   rm -rf "$out"
   sync
   zstd -dc "$work/image.raw.zst" | dd of="$disk" bs=4M oflag=direct status=none
+  echo 3 > "$proc/sys/vm/drop_caches"
   sync
 }
 
