@@ -241,7 +241,7 @@ func (a *hcloudAPI) CreateServers(ctx context.Context, specs ...serverSpec) ([]h
 func createServerError(spec serverSpec, err error) error {
 	if hcloud.IsError(err, hcloud.ErrorCodeResourceUnavailable) || hcloud.IsError(err, hcloud.ErrorCodePlacementError) {
 		return handler.Refuse("server-unavailable",
-			"Hetzner cannot create the server %s, of type %s in %s, now: %v; subscribe again later or in another location",
+			"Hetzner cannot create the server %s, of type %s in %s, now: %v; subscribe again later",
 			spec.Name, spec.ServerType, spec.Location, err)
 	}
 	return fmt.Errorf("creating server %s: %w", spec.Name, err)

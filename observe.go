@@ -17,17 +17,20 @@ import (
 // observers judge every declared resource by the labels and topics it carries, never by a recorded identity,
 // so an unsubscribe of a subscription the engine never recorded still settles from what the provider holds.
 func observers() map[string]handler.Observer {
-	return map[string]handler.Observer{
+	out := map[string]handler.Observer{
 		resNetwork:    labelledObserver{kind: "network", list: listNetworks},
 		resFirewall:   labelledObserver{kind: "firewall", list: listFirewalls},
-		resPrivateLB:  labelledObserver{kind: "API load balancer", list: listLoadBalancers(roleAPI)},
-		resPublicLB:   labelledObserver{kind: "ingress load balancer", list: listLoadBalancers(roleIngress)},
-		resGateway:    labelledObserver{kind: "gateway", list: listServers(roleGateway)},
-		resNode:       labelledObserver{kind: "node", list: listServers(roleNode)},
+		resGateway:    labelledObserver{kind: "gateway", list: listGateways},
 		resRepository: repositoryObserver{},
 		resSeedCommit: seedCommitObserver{},
 		resCluster:    clusterObserver{},
 	}
+	for _, loc := range clusterLocations {
+		out[located(resPrivateLB, loc.name)] = labelledObserver{kind: loc.name + " API load balancer", list: listLoadBalancersIn(roleAPI, loc.name)}
+		out[located(resPublicLB, loc.name)] = labelledObserver{kind: loc.name + " ingress load balancer", list: listLoadBalancersIn(roleIngress, loc.name)}
+		out[located(resNode, loc.name)] = labelledObserver{kind: loc.name + " node", list: listNodesIn(loc.name)}
+	}
+	return out
 }
 
 type labelledLister func(ctx context.Context, api hetznerAPI, subID string) ([]int64, error)
@@ -71,17 +74,22 @@ func listFirewalls(ctx context.Context, api hetznerAPI, subID string) ([]int64, 
 	return idsOf(firewalls, func(f hcFirewall) int64 { return f.ID }), err
 }
 
-func listLoadBalancers(r role) labelledLister {
+func listLoadBalancersIn(r role, loc string) labelledLister {
 	return func(ctx context.Context, api hetznerAPI, subID string) ([]int64, error) {
 		lbs, err := api.ListLoadBalancers(ctx, roleSelector(subID, r))
-		return idsOf(lbs, func(lb hcLoadBalancer) int64 { return lb.ID }), err
+		return idsOf(loadBalancersIn(lbs, loc), loadBalancerID), err
 	}
 }
 
-func listServers(r role) labelledLister {
+func listGateways(ctx context.Context, api hetznerAPI, subID string) ([]int64, error) {
+	gateways, err := api.ListServers(ctx, roleSelector(subID, roleGateway))
+	return idsOf(gateways, serverID), err
+}
+
+func listNodesIn(loc string) labelledLister {
 	return func(ctx context.Context, api hetznerAPI, subID string) ([]int64, error) {
-		servers, err := api.ListServers(ctx, roleSelector(subID, r))
-		return idsOf(servers, func(s hcServer) int64 { return s.ID }), err
+		servers, err := api.ListServers(ctx, roleSelector(subID, roleNode))
+		return idsOf(serversIn(servers, loc), serverID), err
 	}
 }
 
@@ -146,7 +154,7 @@ func hetznerReader(d contract.Desired) (hetznerAPI, contract.Observation, bool) 
 }
 
 // Observe reads the whole cluster: present once every resource is as the block makes it and the newest node report
-// since the node's creation reads every node Ready; absent when no labelled resource or marked repository is left;
+// since the last node's creation reads every node Ready; absent when no labelled resource or marked repository is left;
 // unknown, naming what is missing, in between.
 func (r *blockResource) Observe(ctx context.Context, d contract.Desired) (contract.Observation, error) {
 	return observeCluster(ctx, d)
@@ -176,8 +184,7 @@ func observeCluster(ctx context.Context, d contract.Desired) (contract.Observati
 		problems = append(problems, repo.describe())
 	}
 	if len(problems) == 0 {
-		node, _ := st.server(roleNode)
-		if problem := reportProblem(ctx, d, node); problem != "" {
+		if problem := reportProblem(ctx, d, st.servers[roleNode]); problem != "" {
 			problems = append(problems, problem)
 		}
 	}
@@ -230,20 +237,26 @@ func (st clusterState) enrolment(repo repoObservation) (map[string]string, strin
 
 func (st clusterState) present(subID, repoURL string) contract.Observation {
 	network, _ := st.network()
-	node, _ := st.server(roleNode)
 	gw, _ := st.server(roleGateway)
-	api, _ := st.loadBalancer(roleAPI)
-	ingress, _ := st.loadBalancer(roleIngress)
-	byLocation, _ := json.Marshal(map[string]string{ingress.Location: ingress.PublicIPv4})
+	endpoint, _ := st.loadBalancerIn(roleAPI, clusterLocations[0].name)
+	publicIPs := map[string]string{}
+	var nodes []string
+	for _, loc := range clusterLocations {
+		ingress, _ := st.loadBalancerIn(roleIngress, loc.name)
+		publicIPs[loc.name] = ingress.PublicIPv4
+		node, _ := st.nodeIn(loc.name)
+		nodes = append(nodes, fmt.Sprintf("%d in %s at %s", node.ID, loc.name, node.PrivateIPs[network.ID]))
+	}
+	byLocation, _ := json.Marshal(publicIPs)
 	outputs := enrolmentOutputs(gw.Labels[keyEnrolmentSHA256], repoURL)
-	outputs["privateEndpoint"] = "https://" + api.PrivateIPs[network.ID] + ":" + strconv.Itoa(apiServerPort)
+	outputs["privateEndpoint"] = "https://" + endpoint.PrivateIPs[network.ID] + ":" + strconv.Itoa(apiServerPort)
 	outputs["publicIpByLocation"] = string(byLocation)
 	outputs["subscriptionId"] = subID
 	return contract.Observation{
 		State:   contract.Present,
 		Outputs: outputs,
-		StatusDetail: fmt.Sprintf("node %d is on network %d at %s behind gateway %d, load balancers %d and %d reach it, and its node report reads every node Ready",
-			node.ID, network.ID, node.PrivateIPs[network.ID], gw.ID, api.ID, ingress.ID),
+		StatusDetail: fmt.Sprintf("nodes %s are on network %d behind gateway %d, a public and a private load balancer in each location reach them, and the newest node report reads every node Ready",
+			strings.Join(nodes, ", "), network.ID, gw.ID),
 	}
 }
 
@@ -316,35 +329,40 @@ func (st clusterState) gatewayProblems(network hcNetwork, firewall hcFirewall) [
 }
 
 func (st clusterState) nodeProblems(network hcNetwork, firewall hcFirewall) []string {
-	node, ok := st.server(roleNode)
-	if !ok {
-		return []string{"no node carries this subscription's labels"}
-	}
 	var missing []string
-	if node.PrivateIPs[network.ID] == "" {
-		missing = append(missing, fmt.Sprintf("node %d has no address on network %d", node.ID, network.ID))
-	}
-	if node.PublicIPv4 != "" {
-		missing = append(missing, fmt.Sprintf("node %d holds the public address %s, and only the gateway may", node.ID, node.PublicIPv4))
-	}
-	if !slices.Contains(node.FirewallIDs, firewall.ID) {
-		missing = append(missing, fmt.Sprintf("firewall %d is not applied to node %d", firewall.ID, node.ID))
+	for _, loc := range clusterLocations {
+		node, ok := st.nodeIn(loc.name)
+		if !ok {
+			missing = append(missing, "no node in "+loc.name+" carries this subscription's labels")
+			continue
+		}
+		if node.PrivateIPs[network.ID] == "" {
+			missing = append(missing, fmt.Sprintf("node %d has no address on network %d", node.ID, network.ID))
+		}
+		if node.PublicIPv4 != "" {
+			missing = append(missing, fmt.Sprintf("node %d holds the public address %s, and only the gateway may", node.ID, node.PublicIPv4))
+		}
+		if !slices.Contains(node.FirewallIDs, firewall.ID) {
+			missing = append(missing, fmt.Sprintf("firewall %d is not applied to node %d", firewall.ID, node.ID))
+		}
 	}
 	return missing
 }
 
 func (st clusterState) loadBalancerProblems(network hcNetwork) []string {
 	var missing []string
-	for _, lb := range []struct {
-		role   role
-		public bool
-	}{{roleAPI, false}, {roleIngress, true}} {
-		found, ok := st.loadBalancer(lb.role)
-		if !ok {
-			missing = append(missing, "no "+string(lb.role)+" load balancer carries this subscription's labels")
-			continue
+	for _, loc := range clusterLocations {
+		for _, lb := range []struct {
+			role   role
+			public bool
+		}{{roleAPI, false}, {roleIngress, true}} {
+			found, ok := st.loadBalancerIn(lb.role, loc.name)
+			if !ok {
+				missing = append(missing, "no "+string(lb.role)+" load balancer in "+loc.name+" carries this subscription's labels")
+				continue
+			}
+			missing = append(missing, found.reachProblems(network, lb.public)...)
 		}
-		missing = append(missing, found.reachProblems(network, lb.public)...)
 	}
 	return missing
 }

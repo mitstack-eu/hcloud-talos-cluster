@@ -42,7 +42,6 @@ const (
 )
 
 const (
-	defaultLocation   = "nbg1"
 	defaultServerType = "cx33"
 	gatewayImage      = "ubuntu-24.04"
 	// builderImage is Hetzner's Ubuntu image with Docker installed, so the builder runs imager without a package install.
@@ -55,10 +54,7 @@ const (
 	routerAddress = "10.0.0.1"
 	// gatewayAddress is fixed, since the network's default route and every node's mirror name it.
 	gatewayAddress = "10.0.0.2"
-	// The load balancers join the network at fixed addresses before the gateway does, so neither takes the gateway's.
-	apiLoadBalancerAddress     = "10.0.0.3"
-	ingressLoadBalancerAddress = "10.0.0.4"
-	defaultRoute               = "0.0.0.0/0"
+	defaultRoute   = "0.0.0.0/0"
 
 	apiServerPort = 6443
 	httpPort      = 80
@@ -74,27 +70,32 @@ const (
 // gatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.
 var gatewayServerTypes = []string{"cx23", "cpx22"}
 
-// allowedLocations are the three locations of the eu-central network zone the cluster's subnet lives in.
-var allowedLocations = []string{"fsn1", "nbg1", "hel1"}
+// location's load balancers join the network at fixed addresses before the gateway does, so neither takes the gateway's.
+type location struct {
+	name, apiAddress, ingressAddress string
+}
+
+// clusterLocations hold a node each; the first also holds the gateway, the builder and the control-plane endpoint.
+var clusterLocations = []location{
+	{name: "fsn1", apiAddress: "10.0.0.3", ingressAddress: "10.0.0.4"},
+	{name: "nbg1", apiAddress: "10.0.0.5", ingressAddress: "10.0.0.6"},
+	{name: "hel1", apiAddress: "10.0.0.7", ingressAddress: "10.0.0.8"},
+}
+
+var gatewayLocation = clusterLocations[0].name
 
 // allowedServerTypes are x86, since the image is amd64, hold a control plane with Cilium and Argo CD, and are each one
 // the platform's hetzner.server type allows.
 var allowedServerTypes = []string{"cx23", "cx33", "cx43", "cx53", "cpx52", "cpx62"}
 
 type clusterParams struct {
-	appName, location, serverType string
+	appName, serverType string
 }
 
 func readParams(d contract.Desired) (clusterParams, error) {
-	p := clusterParams{appName: d.Params["appName"], location: d.Params["location"], serverType: d.Params["serverType"]}
+	p := clusterParams{appName: d.Params["appName"], serverType: d.Params["serverType"]}
 	if p.appName == "" {
 		return p, handler.Refuse("missing-param", `the app name is required: params["appName"] is empty`)
-	}
-	if p.location == "" {
-		p.location = defaultLocation
-	}
-	if !slices.Contains(allowedLocations, p.location) {
-		return p, handler.Refuse("invalid-param", `params["location"] is %q; the cluster runs in fsn1, nbg1 or hel1`, p.location)
 	}
 	if p.serverType == "" {
 		p.serverType = defaultServerType
@@ -249,31 +250,33 @@ func nextStep(ctx context.Context, c convergence, network hcNetwork) (step, bool
 	if !ok {
 		return step{"create the firewall", func(ctx context.Context) error { return createFirewall(ctx, c) }}, true, nil
 	}
-	for _, lb := range []struct {
-		want    loadBalancerSpec
-		address string
-	}{
-		{apiLoadBalancer(c.req, network.ID), apiLoadBalancerAddress},
-		{ingressLoadBalancer(c.req, network.ID), ingressLoadBalancerAddress},
-	} {
-		if s, ok := loadBalancerStep(c, lb.want, lb.address); ok {
-			return s, true, nil
+	for _, loc := range clusterLocations {
+		for _, lb := range []struct {
+			want    loadBalancerSpec
+			address string
+		}{
+			{apiLoadBalancer(c.req, network.ID, loc.name), loc.apiAddress},
+			{ingressLoadBalancer(c.req, network.ID, loc.name), loc.ingressAddress},
+		} {
+			if s, ok := loadBalancerStep(c, lb.want, lb.address); ok {
+				return s, true, nil
+			}
 		}
 	}
 	return nodeStep(ctx, c, clusterSite{network: network, firewall: firewall})
 }
 
 type clusterSite struct {
-	network    hcNetwork
-	firewall   hcFirewall
-	apiAddress string
+	network      hcNetwork
+	firewall     hcFirewall
+	apiAddresses []string
 }
 
 // nodeStep builds anew only a cluster with neither node nor gateway left, since the cluster's keys live only in its
-// node, its snapshot and a builder.
+// nodes, its snapshot and a builder.
 func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool, error) {
 	gw, hasGateway := c.state.server(roleGateway)
-	_, hasNode := c.state.server(roleNode)
+	hasNode := len(c.state.servers[roleNode]) > 0
 	builder, hasBuilder := c.state.server(roleBuilder)
 	snap, hasSnapshot := c.state.snapshot()
 	imaged := hasSnapshot && snap.Status == snapshotAvailable
@@ -286,7 +289,8 @@ func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool,
 			return c.api.DeleteServer(ctx, builder.ID)
 		}}, true, nil
 	case hasNode:
-		return step{}, false, nil
+		s, ok := missingNodeStep(c, site, snap)
+		return s, ok, nil
 	case !hasGateway:
 		return installStep(c, site), true, nil
 	case gw.PrivateIPs[site.network.ID] == "":
@@ -300,7 +304,8 @@ func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool,
 	case gw.Status == serverOff:
 		return step{"power on the gateway", func(ctx context.Context) error { return c.api.PowerOnServer(ctx, gw.ID) }}, true, nil
 	case imaged:
-		return step{"create the node from the snapshot", func(ctx context.Context) error { return createNode(ctx, c, site, snap) }}, true, nil
+		s, ok := missingNodeStep(c, site, snap)
+		return s, ok, nil
 	case hasSnapshot:
 		return step{}, false, nil
 	case hasBuilder:
@@ -315,8 +320,10 @@ func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool,
 // match no gateway.
 func installStep(c convergence, site clusterSite) step {
 	if len(c.state.servers[roleBuilder]) == 0 && len(c.state.snapshots) == 0 {
-		api, _ := c.state.loadBalancer(roleAPI)
-		site.apiAddress = api.PrivateIPs[site.network.ID]
+		for _, loc := range clusterLocations {
+			api, _ := c.state.loadBalancerIn(roleAPI, loc.name)
+			site.apiAddresses = append(site.apiAddresses, api.PrivateIPs[site.network.ID])
+		}
 		return step{"create the gateway and the builder", func(ctx context.Context) error { return install(ctx, c, site) }}
 	}
 	return step{"delete the builder and snapshot of a cluster with no gateway", func(ctx context.Context) error {
@@ -371,19 +378,34 @@ func builderStep(ctx context.Context, c convergence, builder hcServer) (step, bo
 	}
 }
 
-// createNode boots the node from the cluster's own snapshot, with no user data and no public address.
-func createNode(ctx context.Context, c convergence, site clusterSite, snap hcSnapshot) error {
+// missingNodeStep creates the node of the first location that has none, one node a call, once the snapshot is available.
+func missingNodeStep(c convergence, site clusterSite, snap hcSnapshot) (step, bool) {
+	if snap.Status != snapshotAvailable {
+		return step{}, false
+	}
+	for _, loc := range clusterLocations {
+		if _, ok := c.state.nodeIn(loc.name); !ok {
+			return step{"create the node in " + loc.name + " from the snapshot", func(ctx context.Context) error {
+				return createNode(ctx, c, site, snap, loc.name)
+			}}, true
+		}
+	}
+	return step{}, false
+}
+
+// createNode boots a node from the cluster's own snapshot, with no user data and no public address, named for its location.
+func createNode(ctx context.Context, c convergence, site clusterSite, snap hcSnapshot, loc string) error {
 	_, err := c.api.CreateServers(ctx, serverSpec{
-		Name:        resourceName(c.req.params.appName, c.req.subID, roleNode),
+		Name:        locatedName(c.req.params.appName, c.req.subID, roleNode, loc),
 		ServerType:  c.req.params.serverType,
-		Location:    c.req.params.location,
+		Location:    loc,
 		ImageID:     snap.ID,
 		Labels:      ownerLabels(c.req.subID, roleNode),
 		NetworkIDs:  []int64{site.network.ID},
 		FirewallIDs: []int64{site.firewall.ID},
 	})
 	if err != nil {
-		return fmt.Errorf("creating the cluster node from snapshot %d: %w", snap.ID, err)
+		return fmt.Errorf("creating the cluster node in %s from snapshot %d: %w", loc, snap.ID, err)
 	}
 	return nil
 }
@@ -415,12 +437,12 @@ func createFirewall(ctx context.Context, c convergence) error {
 	return nil
 }
 
-// apiLoadBalancer carries the Kubernetes API on the private network alone, with no public interface.
-func apiLoadBalancer(req ensureRequest, networkID int64) loadBalancerSpec {
+// apiLoadBalancer carries the Kubernetes API on the private network alone, with no public interface, to every node.
+func apiLoadBalancer(req ensureRequest, networkID int64, loc string) loadBalancerSpec {
 	return loadBalancerSpec{
-		Name:           resourceName(req.params.appName, req.subID, roleAPI),
+		Name:           locatedName(req.params.appName, req.subID, roleAPI, loc),
 		Type:           loadBalancerType,
-		Location:       req.params.location,
+		Location:       loc,
 		Labels:         ownerLabels(req.subID, roleAPI),
 		NetworkID:      networkID,
 		Services:       []lbService{{ListenPort: apiServerPort, DestinationPort: apiServerPort}},
@@ -428,12 +450,12 @@ func apiLoadBalancer(req ensureRequest, networkID int64) loadBalancerSpec {
 	}
 }
 
-// ingressLoadBalancer serves ports 80 and 443 on its public address to the edge's NodePorts, with PROXY protocol.
-func ingressLoadBalancer(req ensureRequest, networkID int64) loadBalancerSpec {
+// ingressLoadBalancer serves ports 80 and 443 on its public address to every node's edge NodePorts, with PROXY protocol.
+func ingressLoadBalancer(req ensureRequest, networkID int64, loc string) loadBalancerSpec {
 	return loadBalancerSpec{
-		Name:            resourceName(req.params.appName, req.subID, roleIngress),
+		Name:            locatedName(req.params.appName, req.subID, roleIngress, loc),
 		Type:            loadBalancerType,
-		Location:        req.params.location,
+		Location:        loc,
 		Labels:          ownerLabels(req.subID, roleIngress),
 		NetworkID:       networkID,
 		PublicInterface: true,
@@ -448,32 +470,32 @@ func ingressLoadBalancer(req ensureRequest, networkID int64) loadBalancerSpec {
 // loadBalancerStep is the next step the load balancer lacks. It is attached before its public interface is disabled or
 // its private target added, since Hetzner refuses either on a load balancer not yet attached to a network.
 func loadBalancerStep(c convergence, want loadBalancerSpec, address string) (step, bool) {
-	r := want.Labels[keyRole]
-	lb, ok := c.state.loadBalancer(role(r))
+	r := want.Labels[keyRole] + " load balancer in " + want.Location
+	lb, ok := c.state.loadBalancerIn(role(want.Labels[keyRole]), want.Location)
 	switch {
 	case !ok:
-		return step{"create the " + r + " load balancer", func(ctx context.Context) error { return createLoadBalancer(ctx, c.api, want) }}, true
+		return step{"create the " + r, func(ctx context.Context) error { return createLoadBalancer(ctx, c.api, want) }}, true
 	case lb.PrivateIPs[want.NetworkID] == "":
-		return step{"attach the " + r + " load balancer to the network", func(ctx context.Context) error {
+		return step{"attach the " + r + " to the network", func(ctx context.Context) error {
 			if err := c.api.AttachLoadBalancerToNetwork(ctx, lb.ID, want.NetworkID, address); err != nil {
-				return fmt.Errorf("attaching the cluster's %s load balancer: %w", r, err)
+				return fmt.Errorf("attaching the cluster's %s: %w", r, err)
 			}
 			return nil
 		}}, true
 	case lb.PublicInterface && !want.PublicInterface:
-		return step{"disable the " + r + " load balancer's public interface", func(ctx context.Context) error {
+		return step{"disable the " + r + "'s public interface", func(ctx context.Context) error {
 			return c.api.DisableLoadBalancerPublicInterface(ctx, lb.ID)
 		}}, true
 	}
 	for _, s := range want.Services {
 		if !slices.ContainsFunc(lb.Services, func(have lbService) bool { return have.ListenPort == s.ListenPort }) {
-			return step{fmt.Sprintf("add port %d to the %s load balancer", s.ListenPort, r), func(ctx context.Context) error {
+			return step{fmt.Sprintf("add port %d to the %s", s.ListenPort, r), func(ctx context.Context) error {
 				return c.api.AddLoadBalancerService(ctx, lb.ID, s)
 			}}, true
 		}
 	}
 	if !slices.Contains(lb.TargetSelectors, want.TargetSelector) {
-		return step{"target the nodes from the " + r + " load balancer", func(ctx context.Context) error {
+		return step{"target the nodes from the " + r, func(ctx context.Context) error {
 			return c.api.AddLoadBalancerTarget(ctx, lb.ID, want.TargetSelector)
 		}}, true
 	}
@@ -486,7 +508,7 @@ func createLoadBalancer(ctx context.Context, api hetznerAPI, want loadBalancerSp
 		Name: want.Name, Type: want.Type, Location: want.Location, Labels: want.Labels, PublicInterface: true,
 	})
 	if err != nil {
-		return fmt.Errorf("creating the cluster's %s load balancer: %w", want.Labels[keyRole], err)
+		return fmt.Errorf("creating the cluster's %s load balancer in %s: %w", want.Labels[keyRole], want.Location, err)
 	}
 	return nil
 }

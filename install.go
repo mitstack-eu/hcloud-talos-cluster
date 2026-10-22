@@ -32,8 +32,9 @@ const (
 type installInputs struct {
 	subID, appName string
 	repo           clusterRepo
-	apiAddress     netip.Addr
-	now            time.Time
+	// apiAddresses are the private load balancers', the first of them the control-plane endpoint.
+	apiAddresses []netip.Addr
+	now          time.Time
 }
 
 // installation is what one install renders: the two servers' user data and the enrolment token's digest.
@@ -62,7 +63,7 @@ func install(ctx context.Context, c convergence, site clusterSite) error {
 	_, err = c.api.CreateServers(ctx, serverSpec{
 		Name:        resourceName(c.req.params.appName, c.req.subID, roleGateway),
 		ServerType:  gatewayType,
-		Location:    c.req.params.location,
+		Location:    gatewayLocation,
 		Image:       gatewayImage,
 		UserData:    inst.gatewayUserData,
 		Labels:      gatewayLabels,
@@ -72,7 +73,7 @@ func install(ctx context.Context, c convergence, site clusterSite) error {
 	}, serverSpec{
 		Name:        resourceName(c.req.params.appName, c.req.subID, roleBuilder),
 		ServerType:  c.req.params.serverType,
-		Location:    c.req.params.location,
+		Location:    gatewayLocation,
 		Image:       builderImage,
 		UserData:    inst.builderUserData,
 		Labels:      ownerLabels(c.req.subID, roleBuilder),
@@ -85,9 +86,9 @@ func install(ctx context.Context, c convergence, site clusterSite) error {
 	return nil
 }
 
-// orderableGatewayType is the first of gatewayServerTypes Hetzner reads as orderable in the subscription's location.
+// orderableGatewayType is the first of gatewayServerTypes Hetzner reads as orderable in the gateway's location.
 func orderableGatewayType(ctx context.Context, c convergence) (string, error) {
-	available, err := c.api.AvailableServerTypes(ctx, c.req.params.location)
+	available, err := c.api.AvailableServerTypes(ctx, gatewayLocation)
 	if err != nil {
 		return "", err
 	}
@@ -97,8 +98,8 @@ func orderableGatewayType(ctx context.Context, c convergence) (string, error) {
 		}
 	}
 	return "", handler.Refuse("server-unavailable",
-		"Hetzner can order none of the gateway's server types %s in %s now; subscribe again later or in another location",
-		strings.Join(gatewayServerTypes, ", "), c.req.params.location)
+		"Hetzner can order none of the gateway's server types %s in %s now; subscribe again later",
+		strings.Join(gatewayServerTypes, ", "), gatewayLocation)
 }
 
 // rollBackInstall deletes whatever gateway and builder a failed install made, since the keys they were made with
@@ -121,14 +122,15 @@ func rollBackInstall(ctx context.Context, c convergence, cause error) error {
 }
 
 func readInstallInputs(req ensureRequest, site clusterSite, now time.Time) (installInputs, error) {
-	apiAddress, err := netip.ParseAddr(site.apiAddress)
-	if err != nil {
-		return installInputs{}, fmt.Errorf("the API load balancer has no address on network %d: %w", site.network.ID, err)
+	in := installInputs{subID: req.subID, appName: req.params.appName, repo: req.gh.repo, now: now}
+	for _, addr := range site.apiAddresses {
+		apiAddress, err := netip.ParseAddr(addr)
+		if err != nil {
+			return installInputs{}, fmt.Errorf("a private load balancer has no address on network %d: %w", site.network.ID, err)
+		}
+		in.apiAddresses = append(in.apiAddresses, apiAddress)
 	}
-	return installInputs{
-		subID: req.subID, appName: req.params.appName, repo: req.gh.repo,
-		apiAddress: apiAddress, now: now,
-	}, nil
+	return in, nil
 }
 
 // renderInstallation mints the cluster's keys, the gateway's CA and the enrolment token, and renders both servers' user data.
@@ -157,7 +159,7 @@ func renderInstallation(in installInputs) (installation, error) {
 		Components:     set,
 		Secrets:        secrets,
 		Network:        netip.MustParsePrefix(networkIPRange),
-		APIAddresses:   []netip.Addr{in.apiAddress},
+		APIAddresses:   in.apiAddresses,
 		Gateways:       []netip.Addr{gatewayAddr},
 		GatewayCA:      gatewayCA.Cert,
 	}, nodeconfig.Node{})
@@ -196,7 +198,7 @@ func renderGateway(in installInputs, ca gateway.CA, set components.Set, secrets 
 		return "", err
 	}
 	// The address only fills the talosconfig's defaults, since the bootstrap names the node it finds on every call.
-	talosconfig, err := secrets.AdminTalosconfig(in.apiAddress, adminTalosconfigTTL, in.now)
+	talosconfig, err := secrets.AdminTalosconfig(in.apiAddresses[0], adminTalosconfigTTL, in.now)
 	if err != nil {
 		return "", err
 	}
