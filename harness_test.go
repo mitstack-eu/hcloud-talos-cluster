@@ -42,7 +42,6 @@ var testStart = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 type fakeHetzner struct {
 	mu            sync.Mutex
 	nextID        int64
-	nextAddress   int
 	servers       map[int64]*hcServer
 	userData      map[int64]string
 	networks      map[int64]*hcNetwork
@@ -66,14 +65,17 @@ type fakeHetzner struct {
 	failCreate map[role]error
 	// failLBStep, when set, fails the next load balancer call of that name with it.
 	failLBStep map[string]error
+	// failAttach, when set, fails the next attach of a server of that role with it once the attach has landed.
+	failAttach map[role]error
 }
 
 func newFakeHetzner(now func() time.Time) *fakeHetzner {
 	return &fakeHetzner{
-		nextID: 1000, nextAddress: 5, now: now,
+		nextID: 1000, now: now,
 		servers: map[int64]*hcServer{}, userData: map[int64]string{}, networks: map[int64]*hcNetwork{},
 		firewalls: map[int64]*hcFirewall{}, loadBalancers: map[int64]*hcLoadBalancer{}, snapshots: map[int64]*hcSnapshot{},
 		started: map[int64]time.Time{}, imaging: map[int64]time.Time{}, failCreate: map[role]error{}, failLBStep: map[string]error{},
+		failAttach: map[role]error{},
 	}
 }
 
@@ -90,10 +92,28 @@ func (f *fakeHetzner) write(waited bool) {
 	}
 }
 
-// address hands out the subnet's next free address, as Hetzner does for a server attached at creation.
-func (f *fakeHetzner) address() string {
-	f.nextAddress++
-	return fmt.Sprintf("10.0.0.%d", f.nextAddress)
+// held reports whether a server or load balancer holds ip on the network.
+func (f *fakeHetzner) held(networkID int64, ip string) bool {
+	for _, s := range f.servers {
+		if s.PrivateIPs[networkID] == ip {
+			return true
+		}
+	}
+	for _, lb := range f.loadBalancers {
+		if lb.PrivateIPs[networkID] == ip {
+			return true
+		}
+	}
+	return false
+}
+
+// firstFree is the lowest address no one holds above the router's, which Hetzner gives a server joining with no address.
+func (f *fakeHetzner) firstFree(networkID int64) string {
+	for host := 2; ; host++ {
+		if ip := fmt.Sprintf("10.0.0.%d", host); !f.held(networkID, ip) {
+			return ip
+		}
+	}
 }
 
 // matches reads a selector of comma-separated key=value terms, the only form the block sends.
@@ -157,7 +177,7 @@ func (f *fakeHetzner) CreateServers(_ context.Context, specs ...serverSpec) ([]h
 			s.PublicIPv4 = fmt.Sprintf("203.0.113.%d", s.ID%250)
 		}
 		for _, n := range spec.NetworkIDs {
-			s.PrivateIPs[n] = f.address()
+			s.PrivateIPs[n] = f.firstFree(n)
 		}
 		f.servers[s.ID], f.userData[s.ID] = s, spec.UserData
 		f.serverSpecs = append(f.serverSpecs, spec)
@@ -173,11 +193,25 @@ func (f *fakeHetzner) ServerStarted(_ context.Context, id int64) (bool, error) {
 	return ok, nil
 }
 
+// AttachServerToNetwork answers as Hetzner did live, refusing a server already on the network and an address held.
 func (f *fakeHetzner) AttachServerToNetwork(_ context.Context, serverID, networkID int64, ip string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	s := f.servers[serverID]
+	switch {
+	case s.PrivateIPs[networkID] != "":
+		return fmt.Errorf("attaching server %d to network %d: server already attached (server_already_attached)", serverID, networkID)
+	case ip == "":
+		ip = f.firstFree(networkID)
+	case f.held(networkID, ip):
+		return fmt.Errorf("attaching server %d to network %d at %s: IP not available (ip_not_available)", serverID, networkID, ip)
+	}
 	f.write(true)
-	f.servers[serverID].PrivateIPs[networkID] = ip
+	s.PrivateIPs[networkID] = ip
+	if err := f.failAttach[role(s.Labels[keyRole])]; err != nil {
+		delete(f.failAttach, role(s.Labels[keyRole]))
+		return err
+	}
 	return nil
 }
 
@@ -264,7 +298,7 @@ func (f *fakeHetzner) CreateLoadBalancer(_ context.Context, spec loadBalancerSpe
 		PrivateIPs: map[int64]string{}, Services: slices.Clone(spec.Services),
 	}
 	if spec.NetworkID != 0 {
-		lb.PrivateIPs[spec.NetworkID] = f.address()
+		lb.PrivateIPs[spec.NetworkID] = f.firstFree(spec.NetworkID)
 	}
 	if spec.TargetSelector != "" {
 		lb.TargetSelectors = []string{spec.TargetSelector}
@@ -301,6 +335,9 @@ func (f *fakeHetzner) AttachLoadBalancerToNetwork(_ context.Context, id, network
 	}
 	if len(lb.PrivateIPs) > 0 {
 		return fmt.Errorf("load_balancer_already_attached: load balancer %d", id)
+	}
+	if f.held(networkID, ip) {
+		return fmt.Errorf("attaching load balancer %d to network %d at %s: IP not available (ip_not_available)", id, networkID, ip)
 	}
 	lb.PrivateIPs[networkID] = ip
 	return nil

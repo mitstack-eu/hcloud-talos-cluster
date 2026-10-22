@@ -1,8 +1,9 @@
 package main
 
-// The manifest provides hetzner.kubernetes-cluster and the handler serves an observer for every resource it declares.
+// The manifest provides hetzner.kubernetes-cluster, an observer serves each resource it declares, and every server type is one the platform allows.
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -47,4 +48,30 @@ func TestHandler_BuildsFromTheManifestAndObservers(t *testing.T) {
 	_, err := handler.New(handlerConfig("https://api.mitstack.test/.well-known/jwks.json", nil))
 
 	require.NoError(t, err)
+}
+
+func TestReadParams_EveryServerTypeTheBlockCreatesIsOneTheHetznerServerTypeAllows(t *testing.T) {
+	var snap struct {
+		Types []struct {
+			ID     string `json:"id"`
+			Inputs []struct {
+				Name          string   `json:"name"`
+				AllowedValues []string `json:"allowedValues"`
+			} `json:"inputs"`
+		} `json:"types"`
+	}
+	require.NoError(t, json.Unmarshal(typeSnapshotJSON, &snap))
+	var allowed []string
+	for _, typ := range snap.Types {
+		for _, in := range typ.Inputs {
+			if typ.ID == typeServer && in.Name == "serverType" {
+				allowed = in.AllowedValues
+			}
+		}
+	}
+	require.NotEmpty(t, allowed, "the %s type's serverType input lists no allowed value", typeServer)
+
+	for _, st := range append([]string{gatewayServerType, defaultServerType}, allowedServerTypes...) {
+		assert.Contains(t, allowed, st, "the block takes server type %s, which the platform refuses at subscribe", st)
+	}
 }
