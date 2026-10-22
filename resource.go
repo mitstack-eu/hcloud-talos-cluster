@@ -3,28 +3,23 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/mitstack-eu/operator-kit/v2/contract"
-	"github.com/mitstack-eu/operator-kit/v2/handler"
+	"github.com/mitstack-eu/operator-kit/v3/contract"
+	"github.com/mitstack-eu/operator-kit/v3/handler"
 )
 
 // blockResource keeps no state between calls and finds every resource by label, so each Ensure takes the cluster
 // on from wherever an earlier call left it.
-type blockResource struct {
-	now func() time.Time
-}
+type blockResource struct{}
 
 var _ handler.ResourceReporter = (*blockResource)(nil)
 
-func (r *blockResource) clock() time.Time {
-	if r.now == nil {
-		return time.Now()
-	}
-	return r.now()
-}
+// clock is a variable so a test can move the time a builder's deadline is judged against.
+var clock = time.Now
 
 const (
 	resNetwork         = "hetzner.network"
@@ -162,28 +157,30 @@ type convergence struct {
 	repo  repoRead
 }
 
-// ensureSteps bounds how often one Ensure reads the cluster again after a step that made something new.
-const ensureSteps = 3
-
-// Ensure takes the cluster as far on as it can and returns while the builder is still building, refusing before any
-// change a cluster it cannot act on unambiguously, or a repository without the subscription's mark.
+// Ensure takes one step that waits on Hetzner, since a call waiting on every action of the install outlasted the
+// platform's two-minute verb timeout, and refuses before any change a cluster it cannot act on unambiguously, or a
+// repository without the subscription's mark. The network and the repository need no wait, so they come first.
 func (r *blockResource) Ensure(ctx context.Context, d contract.Desired) error {
 	req, err := readEnsureRequest(d)
 	if err != nil {
 		return err
 	}
-	api := newHetznerAPI(req.token)
-	for range ensureSteps {
-		c, err := readConvergence(ctx, api, req)
-		if err != nil {
-			return err
-		}
-		again, err := r.converge(ctx, c)
-		if err != nil || !again {
-			return err
-		}
+	c, err := readConvergence(ctx, newHetznerAPI(req.token), req)
+	if err != nil {
+		return err
 	}
-	return nil
+	network, err := ensureNetwork(ctx, c)
+	if err != nil {
+		return err
+	}
+	if err := ensureRepository(ctx, c); err != nil {
+		return err
+	}
+	s, ok, err := nextStep(ctx, c, network)
+	if err != nil || !ok {
+		return err
+	}
+	return s.take(ctx, req.subID)
 }
 
 func readConvergence(ctx context.Context, api hetznerAPI, req ensureRequest) (convergence, error) {
@@ -191,24 +188,30 @@ func readConvergence(ctx context.Context, api hetznerAPI, req ensureRequest) (co
 	if err != nil {
 		return convergence{}, err
 	}
-	if dups := st.duplicates(); len(dups) > 0 {
-		return convergence{}, handler.Refuse("ambiguous-cluster",
-			"the cluster is ambiguous, so nothing was changed: %s; delete the extra ones from the Hetzner project and retry", strings.Join(dups, "; "))
-	}
-	if _, ok := st.network(); !ok && st.hasServers() {
-		return convergence{}, handler.Refuse("network-gone",
-			"servers carry this subscription's labels, but no network does, so nothing was changed; a new network would not hold their addresses, so unsubscribe and subscribe again to rebuild the cluster")
-	}
 	repo, err := req.gh.readRepo(ctx, req.subID)
 	if err != nil {
 		return convergence{}, err
 	}
-	if repo.exists && !repo.marked {
-		return convergence{}, handler.Refuse("repository-not-marked",
-			"the repository %s exists but does not carry this subscription's mark, the topics %s, so nothing was changed. Add both topics if it is this cluster's repository, or move it out of the way, and retry",
-			req.gh.repo.fullName(), strings.Join(repositoryMark(req.subID), " and "))
+	c := convergence{api: api, state: st, req: req, repo: repo}
+	return c, c.refusal()
+}
+
+// refusal names a cluster Ensure must not touch.
+func (c convergence) refusal() error {
+	if dups := c.state.duplicates(); len(dups) > 0 {
+		return handler.Refuse("ambiguous-cluster",
+			"the cluster is ambiguous, so nothing was changed: %s; delete the extra ones from the Hetzner project and retry", strings.Join(dups, "; "))
 	}
-	return convergence{api: api, state: st, req: req, repo: repo}, nil
+	if _, ok := c.state.network(); !ok && c.state.hasServers() {
+		return handler.Refuse("network-gone",
+			"servers carry this subscription's labels, but no network does, so nothing was changed; a new network would not hold their addresses, so unsubscribe and subscribe again to rebuild the cluster")
+	}
+	if c.repo.exists && !c.repo.marked {
+		return handler.Refuse("repository-not-marked",
+			"the repository %s exists but does not carry this subscription's mark, the topics %s, so nothing was changed. Add both topics if it is this cluster's repository, or move it out of the way, and retry",
+			c.req.gh.repo.fullName(), strings.Join(repositoryMark(c.req.subID), " and "))
+	}
+	return nil
 }
 
 func (st clusterState) hasServers() bool {
@@ -220,28 +223,43 @@ func (st clusterState) hasServers() bool {
 	return false
 }
 
-// converge reports whether it made something the next step may already build on.
-func (r *blockResource) converge(ctx context.Context, c convergence) (bool, error) {
-	network, err := ensureNetwork(ctx, c)
+// step is one change to the cluster and the wait on Hetzner's actions for it.
+type step struct {
+	what string
+	run  func(ctx context.Context) error
+}
+
+// take logs how long the step ran, so a live run shows each call's share of the verb timeout.
+func (s step) take(ctx context.Context, subID string) error {
+	start := time.Now()
+	err := s.run(ctx)
+	outcome := "took"
 	if err != nil {
-		return false, err
+		outcome = "failed after"
 	}
-	firewall, err := ensureFirewall(ctx, c)
-	if err != nil {
-		return false, err
+	log.Printf("%s: subscription %s: the step to %s %s %s", blockID, subID, s.what, outcome, time.Since(start).Round(time.Millisecond))
+	return err
+}
+
+// nextStep is the first step the cluster lacks, each in the order it depends on the one before, and none while only
+// Hetzner or the node can finish the work in flight.
+func nextStep(ctx context.Context, c convergence, network hcNetwork) (step, bool, error) {
+	firewall, ok := c.state.firewall()
+	if !ok {
+		return step{"create the firewall", func(ctx context.Context) error { return createFirewall(ctx, c) }}, true, nil
 	}
-	if err := ensureRepository(ctx, c); err != nil {
-		return false, err
+	for _, lb := range []struct {
+		want    loadBalancerSpec
+		address string
+	}{
+		{apiLoadBalancer(c.req, network.ID), apiLoadBalancerAddress},
+		{ingressLoadBalancer(c.req, network.ID), ingressLoadBalancerAddress},
+	} {
+		if s, ok := loadBalancerStep(c, lb.want, lb.address); ok {
+			return s, true, nil
+		}
 	}
-	apiAddress, err := ensureLoadBalancer(ctx, c, apiLoadBalancer(c.req, network.ID), apiLoadBalancerAddress)
-	if err != nil {
-		return false, err
-	}
-	if _, err := ensureLoadBalancer(ctx, c, ingressLoadBalancer(c.req, network.ID), ingressLoadBalancerAddress); err != nil {
-		return false, err
-	}
-	site := clusterSite{network: network, firewall: firewall, apiAddress: apiAddress}
-	return r.ensureNode(ctx, c, site)
+	return nodeStep(ctx, c, clusterSite{network: network, firewall: firewall})
 }
 
 type clusterSite struct {
@@ -250,81 +268,100 @@ type clusterSite struct {
 	apiAddress string
 }
 
-// ensureNode builds anew only a cluster with neither node nor gateway left, since the cluster's keys live only in
-// its node, its snapshot and a builder.
-func (r *blockResource) ensureNode(ctx context.Context, c convergence, site clusterSite) (bool, error) {
-	_, hasGateway := c.state.server(roleGateway)
+// nodeStep builds anew only a cluster with neither node nor gateway left, since the cluster's keys live only in its
+// node, its snapshot and a builder.
+func nodeStep(ctx context.Context, c convergence, site clusterSite) (step, bool, error) {
+	gw, hasGateway := c.state.server(roleGateway)
 	_, hasNode := c.state.server(roleNode)
 	builder, hasBuilder := c.state.server(roleBuilder)
 	snap, hasSnapshot := c.state.snapshot()
-	if hasBuilder && (hasSnapshot || hasNode) {
-		if err := c.api.DeleteServer(ctx, builder.ID); err != nil {
-			return false, fmt.Errorf("deleting the builder %d, whose disk holds every key of the cluster, beside its snapshot: %w", builder.ID, err)
-		}
-		hasBuilder = false
-	}
+	imaged := hasSnapshot && snap.Status == snapshotAvailable
 	switch {
 	case hasNode && !hasGateway:
-		return false, handler.Refuse("gateway-lost",
+		return step{}, false, handler.Refuse("gateway-lost",
 			"the node is running, but no gateway carries this subscription's labels, so the node cannot pull an image and nothing was changed; the gateway's certificate authority is gone with it, so unsubscribe and subscribe again to rebuild the cluster")
+	case hasBuilder && (hasNode || imaged):
+		return step{"delete the builder, whose disk holds every key of the cluster, beside its snapshot", func(ctx context.Context) error {
+			return c.api.DeleteServer(ctx, builder.ID)
+		}}, true, nil
 	case hasNode:
-		return false, nil
+		return step{}, false, nil
 	case !hasGateway:
-		return true, r.installAnew(ctx, c, site)
+		return installStep(c, site), true, nil
+	case gw.PrivateIPs[site.network.ID] == "":
+		return step{"attach the gateway to the network at its fixed address before its first boot", func(ctx context.Context) error {
+			return c.api.AttachServerToNetwork(ctx, gw.ID, site.network.ID, gatewayAddress)
+		}}, true, nil
+	case gw.Status == serverOff:
+		return step{"power on the gateway", func(ctx context.Context) error { return c.api.PowerOnServer(ctx, gw.ID) }}, true, nil
 	case hasSnapshot:
-		return false, createNode(ctx, c, site, snap)
+		return step{"create the node from the snapshot", func(ctx context.Context) error { return createNode(ctx, c, site, snap) }}, imaged, nil
 	case hasBuilder:
-		return false, r.finishBuild(ctx, c, site, builder)
+		return builderStep(ctx, c, builder)
 	default:
-		return false, handler.Refuse("cluster-secrets-lost",
+		return step{}, false, handler.Refuse("cluster-secrets-lost",
 			"the gateway exists but neither the builder nor the cluster's snapshot does, so the cluster's keys, which only they held, are gone; unsubscribe and subscribe again to rebuild the cluster")
 	}
 }
 
-// installAnew deletes a builder or snapshot left from a cluster whose gateway is gone, since the keys they hold
-// match no gateway, and installs the cluster.
-func (r *blockResource) installAnew(ctx context.Context, c convergence, site clusterSite) error {
-	for _, builder := range c.state.servers[roleBuilder] {
-		if err := c.api.DeleteServer(ctx, builder.ID); err != nil {
-			return fmt.Errorf("deleting the builder %d of a cluster with no gateway: %w", builder.ID, err)
-		}
+// installStep first deletes a builder or snapshot left from a cluster whose gateway is gone, since the keys they hold
+// match no gateway.
+func installStep(c convergence, site clusterSite) step {
+	if len(c.state.servers[roleBuilder]) == 0 && len(c.state.snapshots) == 0 {
+		api, _ := c.state.loadBalancer(roleAPI)
+		site.apiAddress = api.PrivateIPs[site.network.ID]
+		return step{"create the gateway and the builder", func(ctx context.Context) error { return install(ctx, c, site) }}
 	}
-	for _, snap := range c.state.snapshots {
-		if err := c.api.DeleteSnapshot(ctx, snap.ID); err != nil {
-			return fmt.Errorf("deleting the snapshot %d of a cluster with no gateway: %w", snap.ID, err)
+	return step{"delete the builder and snapshot of a cluster with no gateway", func(ctx context.Context) error {
+		for _, builder := range c.state.servers[roleBuilder] {
+			if err := c.api.DeleteServer(ctx, builder.ID); err != nil {
+				return fmt.Errorf("deleting the builder %d of a cluster with no gateway: %w", builder.ID, err)
+			}
 		}
-	}
-	return r.install(ctx, c, site)
+		for _, snap := range c.state.snapshots {
+			if err := c.api.DeleteSnapshot(ctx, snap.ID); err != nil {
+				return fmt.Errorf("deleting the snapshot %d of a cluster with no gateway: %w", snap.ID, err)
+			}
+		}
+		return nil
+	}}
 }
 
-// finishBuild snapshots a builder that has powered itself off, and deletes one that has not within buildDeadline.
-func (r *blockResource) finishBuild(ctx context.Context, c convergence, site clusterSite, builder hcServer) error {
-	if builder.Status != "off" {
-		if r.clock().Sub(builder.Created) < buildDeadline {
-			return nil
+// builderStep powers on a builder that has never run, snapshots one that ran and powered itself off, and deletes one
+// still running past buildDeadline, since its script leaves a failed build running and only the deadline tells.
+func builderStep(ctx context.Context, c convergence, builder hcServer) (step, bool, error) {
+	switch builder.Status {
+	case serverRunning:
+		if clock().Sub(builder.Created) < buildDeadline {
+			return step{}, false, nil
 		}
-		if err := c.api.DeleteServer(ctx, builder.ID); err != nil {
-			return fmt.Errorf("deleting the builder %d that did not finish: %w", builder.ID, err)
+		return step{"delete the builder that did not finish", func(ctx context.Context) error {
+			if err := c.api.DeleteServer(ctx, builder.ID); err != nil {
+				return fmt.Errorf("deleting the builder %d that did not finish: %w", builder.ID, err)
+			}
+			return handler.Refuse("image-build-failed",
+				"the builder did not power itself off within %s of its creation, so the cluster's image was not built and the builder is deleted; unsubscribe and subscribe again to rebuild the cluster", buildDeadline)
+		}}, true, nil
+	case serverOff:
+		started, err := c.api.ServerStarted(ctx, builder.ID)
+		if err != nil || !started {
+			return step{"power on the builder", func(ctx context.Context) error { return c.api.PowerOnServer(ctx, builder.ID) }}, err == nil, err
 		}
-		return handler.Refuse("image-build-failed",
-			"the builder did not power itself off within %s of its creation, so the cluster's image was not built and the builder is deleted; unsubscribe and subscribe again to rebuild the cluster", buildDeadline)
+		return step{"start the snapshot of the builder's disk", func(ctx context.Context) error {
+			_, err := c.api.StartSnapshot(ctx, builder.ID, snapshotSpec{
+				Description: resourceName(c.req.params.appName, c.req.subID, roleImage),
+				Labels:      ownerLabels(c.req.subID, roleImage),
+			})
+			return err
+		}}, true, nil
+	default:
+		return step{}, false, nil
 	}
-	snap, err := c.api.CreateSnapshot(ctx, builder.ID, snapshotSpec{
-		Description: resourceName(c.req.params.appName, c.req.subID, roleImage),
-		Labels:      ownerLabels(c.req.subID, roleImage),
-	})
-	if err != nil {
-		return fmt.Errorf("snapshotting the builder %d: %w", builder.ID, err)
-	}
-	if err := c.api.DeleteServer(ctx, builder.ID); err != nil {
-		return fmt.Errorf("deleting the builder %d once its disk is a snapshot: %w", builder.ID, err)
-	}
-	return createNode(ctx, c, site, snap)
 }
 
 // createNode boots the node from the cluster's own snapshot, with no user data and no public address.
 func createNode(ctx context.Context, c convergence, site clusterSite, snap hcSnapshot) error {
-	_, err := c.api.CreateServer(ctx, serverSpec{
+	_, err := c.api.CreateServers(ctx, serverSpec{
 		Name:        resourceName(c.req.params.appName, c.req.subID, roleNode),
 		ServerType:  c.req.params.serverType,
 		Location:    c.req.params.location,
@@ -356,17 +393,14 @@ func ensureNetwork(ctx context.Context, c convergence) (hcNetwork, error) {
 	return n, nil
 }
 
-func ensureFirewall(ctx context.Context, c convergence) (hcFirewall, error) {
-	if fw, ok := c.state.firewall(); ok {
-		return fw, nil
-	}
-	fw, err := c.api.CreateFirewall(ctx, firewallSpec{
+func createFirewall(ctx context.Context, c convergence) error {
+	_, err := c.api.CreateFirewall(ctx, firewallSpec{
 		Name: resourceName(c.req.params.appName, c.req.subID, "firewall"), Labels: ownerLabels(c.req.subID, "firewall"),
 	})
 	if err != nil {
-		return hcFirewall{}, fmt.Errorf("creating the cluster firewall: %w", err)
+		return fmt.Errorf("creating the cluster firewall: %w", err)
 	}
-	return fw, nil
+	return nil
 }
 
 // apiLoadBalancer carries the Kubernetes API on the private network alone, with no public interface.
@@ -399,58 +433,50 @@ func ingressLoadBalancer(req ensureRequest, networkID int64) loadBalancerSpec {
 	}
 }
 
-// ensureLoadBalancer takes the load balancer through each step it still lacks, each finished by its own Hetzner action,
-// and returns its address on the network. It is attached before its public interface is disabled or its private target
-// added, since Hetzner refuses either on a load balancer not yet attached to a network.
-func ensureLoadBalancer(ctx context.Context, c convergence, want loadBalancerSpec, address string) (string, error) {
-	lb, err := findOrCreateLoadBalancer(ctx, c, want)
-	if err != nil {
-		return "", err
+// loadBalancerStep is the next step the load balancer lacks. It is attached before its public interface is disabled or
+// its private target added, since Hetzner refuses either on a load balancer not yet attached to a network.
+func loadBalancerStep(c convergence, want loadBalancerSpec, address string) (step, bool) {
+	r := want.Labels[keyRole]
+	lb, ok := c.state.loadBalancer(role(r))
+	switch {
+	case !ok:
+		return step{"create the " + r + " load balancer", func(ctx context.Context) error { return createLoadBalancer(ctx, c.api, want) }}, true
+	case lb.PrivateIPs[want.NetworkID] == "":
+		return step{"attach the " + r + " load balancer to the network", func(ctx context.Context) error {
+			if err := c.api.AttachLoadBalancerToNetwork(ctx, lb.ID, want.NetworkID, address); err != nil {
+				return fmt.Errorf("attaching the cluster's %s load balancer: %w", r, err)
+			}
+			return nil
+		}}, true
+	case lb.PublicInterface && !want.PublicInterface:
+		return step{"disable the " + r + " load balancer's public interface", func(ctx context.Context) error {
+			return c.api.DisableLoadBalancerPublicInterface(ctx, lb.ID)
+		}}, true
 	}
-	attached := lb.PrivateIPs[want.NetworkID]
-	if attached == "" {
-		if err := c.api.AttachLoadBalancerToNetwork(ctx, lb.ID, want.NetworkID, address); err != nil {
-			return "", fmt.Errorf("attaching the cluster's %s load balancer: %w", want.Labels[keyRole], err)
+	for _, s := range want.Services {
+		if !slices.ContainsFunc(lb.Services, func(have lbService) bool { return have.ListenPort == s.ListenPort }) {
+			return step{fmt.Sprintf("add port %d to the %s load balancer", s.ListenPort, r), func(ctx context.Context) error {
+				return c.api.AddLoadBalancerService(ctx, lb.ID, s)
+			}}, true
 		}
-		attached = address
 	}
-	if lb.PublicInterface && !want.PublicInterface {
-		if err := c.api.DisableLoadBalancerPublicInterface(ctx, lb.ID); err != nil {
-			return "", err
-		}
+	if !slices.Contains(lb.TargetSelectors, want.TargetSelector) {
+		return step{"target the nodes from the " + r + " load balancer", func(ctx context.Context) error {
+			return c.api.AddLoadBalancerTarget(ctx, lb.ID, want.TargetSelector)
+		}}, true
 	}
-	return attached, addMissingServicesAndTarget(ctx, c.api, lb, want)
+	return step{}, false
 }
 
-// findOrCreateLoadBalancer creates one bare, with its public interface on, since Hetzner's create takes no address on
-// the network. The one it returns reads its public interface on whatever the create answer says.
-func findOrCreateLoadBalancer(ctx context.Context, c convergence, want loadBalancerSpec) (hcLoadBalancer, error) {
-	if lb, ok := c.state.loadBalancer(role(want.Labels[keyRole])); ok {
-		return lb, nil
-	}
-	lb, err := c.api.CreateLoadBalancer(ctx, loadBalancerSpec{
+// createLoadBalancer creates one bare, with its public interface on, since Hetzner's create takes no address on the network.
+func createLoadBalancer(ctx context.Context, api hetznerAPI, want loadBalancerSpec) error {
+	_, err := api.CreateLoadBalancer(ctx, loadBalancerSpec{
 		Name: want.Name, Type: want.Type, Location: want.Location, Labels: want.Labels, PublicInterface: true,
 	})
 	if err != nil {
-		return hcLoadBalancer{}, fmt.Errorf("creating the cluster's %s load balancer: %w", want.Labels[keyRole], err)
+		return fmt.Errorf("creating the cluster's %s load balancer: %w", want.Labels[keyRole], err)
 	}
-	lb.PublicInterface = true
-	return lb, nil
-}
-
-func addMissingServicesAndTarget(ctx context.Context, api hetznerAPI, lb hcLoadBalancer, want loadBalancerSpec) error {
-	for _, s := range want.Services {
-		if slices.ContainsFunc(lb.Services, func(have lbService) bool { return have.ListenPort == s.ListenPort }) {
-			continue
-		}
-		if err := api.AddLoadBalancerService(ctx, lb.ID, s); err != nil {
-			return err
-		}
-	}
-	if slices.Contains(lb.TargetSelectors, want.TargetSelector) {
-		return nil
-	}
-	return api.AddLoadBalancerTarget(ctx, lb.ID, want.TargetSelector)
+	return nil
 }
 
 // ensureRepository creates and marks the cluster repository only when none exists, since Ensure has already

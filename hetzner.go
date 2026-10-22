@@ -4,20 +4,25 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
+	"github.com/mitstack-eu/operator-kit/v3/handler"
 )
 
 // hetznerAPI is every Hetzner call the block makes; each list takes a label selector, and each delete treats a
 // resource Hetzner no longer has as deleted.
 type hetznerAPI interface {
 	ListServers(ctx context.Context, labelSelector string) ([]hcServer, error)
-	// CreateServer returns once Hetzner's create action has finished.
-	CreateServer(ctx context.Context, spec serverSpec) (hcServer, error)
+	// CreateServers sends every create before it waits, and returns once Hetzner's actions for all of them have finished.
+	CreateServers(ctx context.Context, specs ...serverSpec) ([]hcServer, error)
+	// ServerStarted reports whether Hetzner has finished powering the server on at least once.
+	ServerStarted(ctx context.Context, id int64) (bool, error)
 	AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error
 	PowerOnServer(ctx context.Context, id int64) error
 	DeleteServer(ctx context.Context, id int64) error
@@ -37,8 +42,9 @@ type hetznerAPI interface {
 	AddLoadBalancerTarget(ctx context.Context, id int64, labelSelector string) error
 	DeleteLoadBalancer(ctx context.Context, id int64) error
 	ListSnapshots(ctx context.Context, labelSelector string) ([]hcSnapshot, error)
-	// CreateSnapshot returns once Hetzner has finished imaging the server's disk.
-	CreateSnapshot(ctx context.Context, serverID int64, spec snapshotSpec) (hcSnapshot, error)
+	// StartSnapshot returns once Hetzner has begun imaging the server's disk, which can outlast one call; the snapshot
+	// reads creating until it is done.
+	StartSnapshot(ctx context.Context, serverID int64, spec snapshotSpec) (hcSnapshot, error)
 	DeleteSnapshot(ctx context.Context, id int64) error
 }
 
@@ -147,6 +153,12 @@ type snapshotSpec struct {
 const (
 	hetznerTimeout = 60 * time.Second
 
+	serverOff         = string(hcloud.ServerStatusOff)
+	serverRunning     = string(hcloud.ServerStatusRunning)
+	snapshotAvailable = string(hcloud.ImageStatusAvailable)
+	// startServerCommand is the command of the action Hetzner runs for a power-on, and for a create that starts the server.
+	startServerCommand = "start_server"
+
 	healthCheckInterval = 15 * time.Second
 	healthCheckTimeout  = 10 * time.Second
 	healthCheckRetries  = 3
@@ -186,7 +198,37 @@ func (a *hcloudAPI) ListServers(ctx context.Context, labelSelector string) ([]hc
 	return out, nil
 }
 
-func (a *hcloudAPI) CreateServer(ctx context.Context, spec serverSpec) (hcServer, error) {
+// CreateServers still waits on the servers already created when a later create is refused, so a rollback can delete them.
+func (a *hcloudAPI) CreateServers(ctx context.Context, specs ...serverSpec) ([]hcServer, error) {
+	var created []hcServer
+	var actions []*hcloud.Action
+	var errs []error
+	for _, spec := range specs {
+		res, _, err := a.client.Server.Create(ctx, serverCreateOpts(spec))
+		if err != nil {
+			errs = append(errs, createServerError(spec, err))
+			break
+		}
+		created = append(created, serverFromHcloud(res.Server))
+		actions = append(append(actions, res.Action), res.NextActions...)
+	}
+	if err := a.client.Action.WaitFor(ctx, actions...); err != nil {
+		errs = append(errs, fmt.Errorf("waiting for %d servers to be created: %w", len(created), err))
+	}
+	return created, errors.Join(errs...)
+}
+
+// createServerError refuses a create Hetzner cannot place now, naming its reason, since a retry of the same call fails alike.
+func createServerError(spec serverSpec, err error) error {
+	if hcloud.IsError(err, hcloud.ErrorCodeResourceUnavailable) || hcloud.IsError(err, hcloud.ErrorCodePlacementError) {
+		return handler.Refuse("server-unavailable",
+			"Hetzner cannot create the server %s, of type %s in %s, now: %v; subscribe again later or in another location",
+			spec.Name, spec.ServerType, spec.Location, err)
+	}
+	return fmt.Errorf("creating server %s: %w", spec.Name, err)
+}
+
+func serverCreateOpts(spec serverSpec) hcloud.ServerCreateOpts {
 	opts := hcloud.ServerCreateOpts{
 		Name:             spec.Name,
 		ServerType:       &hcloud.ServerType{Name: spec.ServerType},
@@ -203,14 +245,16 @@ func (a *hcloudAPI) CreateServer(ctx context.Context, spec serverSpec) (hcServer
 	for _, id := range spec.FirewallIDs {
 		opts.Firewalls = append(opts.Firewalls, &hcloud.ServerCreateFirewall{Firewall: hcloud.Firewall{ID: id}})
 	}
-	res, _, err := a.client.Server.Create(ctx, opts)
+	return opts
+}
+
+func (a *hcloudAPI) ServerStarted(ctx context.Context, id int64) (bool, error) {
+	actions, err := a.client.Server.Action.AllFor(ctx, &hcloud.Server{ID: id},
+		hcloud.ActionListOpts{Status: []hcloud.ActionStatus{hcloud.ActionStatusSuccess}})
 	if err != nil {
-		return hcServer{}, fmt.Errorf("creating server %s: %w", spec.Name, err)
+		return false, fmt.Errorf("listing the finished actions of server %d: %w", id, err)
 	}
-	if err := a.client.Action.WaitFor(ctx, append([]*hcloud.Action{res.Action}, res.NextActions...)...); err != nil {
-		return hcServer{}, fmt.Errorf("waiting for server %s to be created: %w", spec.Name, err)
-	}
-	return serverFromHcloud(res.Server), nil
+	return slices.ContainsFunc(actions, func(a *hcloud.Action) bool { return a.Command == startServerCommand }), nil
 }
 
 func (a *hcloudAPI) AttachServerToNetwork(ctx context.Context, serverID, networkID int64, ip string) error {
@@ -454,15 +498,12 @@ func (a *hcloudAPI) ListSnapshots(ctx context.Context, labelSelector string) ([]
 	return out, nil
 }
 
-func (a *hcloudAPI) CreateSnapshot(ctx context.Context, serverID int64, spec snapshotSpec) (hcSnapshot, error) {
+func (a *hcloudAPI) StartSnapshot(ctx context.Context, serverID int64, spec snapshotSpec) (hcSnapshot, error) {
 	res, _, err := a.client.Server.CreateImage(ctx, &hcloud.Server{ID: serverID}, &hcloud.ServerCreateImageOpts{
 		Type: hcloud.ImageTypeSnapshot, Description: hcloud.Ptr(spec.Description), Labels: spec.Labels,
 	})
 	if err != nil {
 		return hcSnapshot{}, fmt.Errorf("creating a snapshot of server %d: %w", serverID, err)
-	}
-	if err := a.wait(ctx, res.Action, fmt.Sprintf("the snapshot of server %d", serverID)); err != nil {
-		return hcSnapshot{}, err
 	}
 	return snapshotFromHcloud(res.Image), nil
 }
