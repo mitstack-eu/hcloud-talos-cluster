@@ -21,6 +21,8 @@ type hetznerAPI interface {
 	ListServers(ctx context.Context, labelSelector string) ([]hcServer, error)
 	// CreateServers sends every create before it waits, and returns once Hetzner's actions for all of them have finished.
 	CreateServers(ctx context.Context, specs ...serverSpec) ([]hcServer, error)
+	// AvailableServerTypes names the server types Hetzner reads as orderable in location now.
+	AvailableServerTypes(ctx context.Context, location string) ([]string, error)
 	// ServerStarted reports whether Hetzner has finished powering the server on at least once.
 	ServerStarted(ctx context.Context, id int64) (bool, error)
 	// AttachServerToNetwork with an empty ip lets Hetzner give the server the network's first free address.
@@ -247,6 +249,22 @@ func serverCreateOpts(spec serverSpec) hcloud.ServerCreateOpts {
 		opts.Firewalls = append(opts.Firewalls, &hcloud.ServerCreateFirewall{Firewall: hcloud.Firewall{ID: id}})
 	}
 	return opts
+}
+
+func (a *hcloudAPI) AvailableServerTypes(ctx context.Context, location string) ([]string, error) {
+	types, err := a.client.ServerType.All(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing server types: %w", err)
+	}
+	var names []string
+	for _, t := range types {
+		if slices.ContainsFunc(t.Locations, func(l hcloud.ServerTypeLocation) bool {
+			return l.Available && l.Location != nil && l.Location.Name == location
+		}) {
+			names = append(names, t.Name)
+		}
+	}
+	return names, nil
 }
 
 func (a *hcloudAPI) ServerStarted(ctx context.Context, id int64) (bool, error) {

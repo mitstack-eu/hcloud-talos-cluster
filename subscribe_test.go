@@ -301,3 +301,39 @@ func TestSubscribe_AnInstallThatFailsAfterTheGatewayExistsLeavesNothingTheNextEn
 	assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the retry")
 	assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the retry")
 }
+
+func TestSubscribe_TheGatewayTakesTheFirstTypeTheLocationCanOrder(t *testing.T) {
+	cases := []struct {
+		name    string
+		soldOut []string
+		want    string
+	}{
+		{name: "cx23 when the location can order it", want: "cx23"},
+		{name: "cpx22 when cx23 is sold out", soldOut: []string{"cx23"}, want: "cpx22"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.hetzner.soldOut = tc.soldOut
+
+			e.subscribe()
+
+			gateways := e.hetzner.byRole(t, roleGateway)
+			require.Len(t, gateways, 1, "gateways")
+			assert.Equal(t, tc.want, gateways[0].ServerType, "the gateway's server type")
+		})
+	}
+}
+
+func TestSubscribe_RefusesBeforeAnyServerWhenNoGatewayTypeCanBeOrdered(t *testing.T) {
+	e := newEnv(t)
+	e.hetzner.soldOut = []string{"cx23", "cpx22"}
+
+	err := e.converge()
+
+	require.Error(t, err)
+	for _, want := range []string{"server-unavailable", "cx23", "cpx22", "nbg1"} {
+		assert.Contains(t, err.Error(), want)
+	}
+	assert.Empty(t, e.hetzner.serverSpecs, "servers created with no gateway type to order")
+}

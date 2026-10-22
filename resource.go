@@ -44,7 +44,6 @@ const (
 const (
 	defaultLocation   = "nbg1"
 	defaultServerType = "cx33"
-	gatewayServerType = "cx23"
 	gatewayImage      = "ubuntu-24.04"
 	// builderImage is Hetzner's Ubuntu image with Docker installed, so the builder runs imager without a package install.
 	builderImage     = "docker-ce"
@@ -71,6 +70,9 @@ const (
 	// buildDeadline bounds the builder from its creation to powering itself off with the image on its disk.
 	buildDeadline = 30 * time.Minute
 )
+
+// gatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.
+var gatewayServerTypes = []string{"cx23", "cpx22"}
 
 // allowedLocations are the three locations of the eu-central network zone the cluster's subnet lives in.
 var allowedLocations = []string{"fsn1", "nbg1", "hel1"}

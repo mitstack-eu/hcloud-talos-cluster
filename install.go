@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"net/netip"
 	"runtime/debug"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/mitstack-eu/operator-kit/v3/handler"
 	"github.com/mitstack-eu/talos-cluster-kit/components"
 	"github.com/mitstack-eu/talos-cluster-kit/gateway"
 	"github.com/mitstack-eu/talos-cluster-kit/nodeconfig"
@@ -50,11 +53,15 @@ func install(ctx context.Context, c convergence, site clusterSite) error {
 	if err != nil {
 		return err
 	}
+	gatewayType, err := orderableGatewayType(ctx, c)
+	if err != nil {
+		return err
+	}
 	gatewayLabels := ownerLabels(c.req.subID, roleGateway)
 	gatewayLabels[keyEnrolmentSHA256] = inst.enrolmentDigest
 	_, err = c.api.CreateServers(ctx, serverSpec{
 		Name:        resourceName(c.req.params.appName, c.req.subID, roleGateway),
-		ServerType:  gatewayServerType,
+		ServerType:  gatewayType,
 		Location:    c.req.params.location,
 		Image:       gatewayImage,
 		UserData:    inst.gatewayUserData,
@@ -76,6 +83,22 @@ func install(ctx context.Context, c convergence, site clusterSite) error {
 		return rollBackInstall(ctx, c, fmt.Errorf("creating the gateway and the image builder: %w", err))
 	}
 	return nil
+}
+
+// orderableGatewayType is the first of gatewayServerTypes Hetzner reads as orderable in the subscription's location.
+func orderableGatewayType(ctx context.Context, c convergence) (string, error) {
+	available, err := c.api.AvailableServerTypes(ctx, c.req.params.location)
+	if err != nil {
+		return "", err
+	}
+	for _, t := range gatewayServerTypes {
+		if slices.Contains(available, t) {
+			return t, nil
+		}
+	}
+	return "", handler.Refuse("server-unavailable",
+		"Hetzner can order none of the gateway's server types %s in %s now; subscribe again later or in another location",
+		strings.Join(gatewayServerTypes, ", "), c.req.params.location)
 }
 
 // rollBackInstall deletes whatever gateway and builder a failed install made, since the keys they were made with

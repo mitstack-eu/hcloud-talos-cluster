@@ -67,6 +67,8 @@ type fakeHetzner struct {
 	failLBStep map[string]error
 	// failAttach, when set, fails the next attach of a server of that role with it once the attach has landed.
 	failAttach map[role]error
+	// soldOut holds the server types no location can order.
+	soldOut []string
 }
 
 func newFakeHetzner(now func() time.Time) *fakeHetzner {
@@ -184,6 +186,13 @@ func (f *fakeHetzner) CreateServers(_ context.Context, specs ...serverSpec) ([]h
 		created = append(created, *s)
 	}
 	return created, nil
+}
+
+func (f *fakeHetzner) AvailableServerTypes(_ context.Context, _ string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.DeleteFunc([]string{"cx23", "cx33", "cx43", "cx53", "cpx22", "cpx52", "cpx62"},
+		func(name string) bool { return slices.Contains(f.soldOut, name) }), nil
 }
 
 func (f *fakeHetzner) ServerStarted(_ context.Context, id int64) (bool, error) {
