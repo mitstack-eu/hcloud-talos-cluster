@@ -39,8 +39,8 @@ type installation struct {
 	enrolmentDigest                  string
 }
 
-// install creates both servers stopped and waits on their creates together, so the gateway joins the network before
-// its first boot, since its user data names its address, and the builder starts only once the gateway forwards.
+// install creates both servers stopped and off the network, since Hetzner gives a server joining with no address the
+// first free one, which would be the gateway's own.
 func install(ctx context.Context, c convergence, site clusterSite) error {
 	in, err := readInstallInputs(c.req, site, clock())
 	if err != nil {
@@ -69,7 +69,6 @@ func install(ctx context.Context, c convergence, site clusterSite) error {
 		Image:       builderImage,
 		UserData:    inst.builderUserData,
 		Labels:      ownerLabels(c.req.subID, roleBuilder),
-		NetworkIDs:  []int64{site.network.ID},
 		FirewallIDs: []int64{site.firewall.ID},
 		Stopped:     true,
 	})

@@ -5,7 +5,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -165,6 +167,37 @@ func TestSubscribe_TheGatewayJoinsTheNetworkAtItsFixedAddressBeforeItBoots(t *te
 	assert.Equal(t, gatewayAddress, gateways[0].PrivateIPs[networks[0].ID], "the gateway's private address")
 	assert.Equal(t, "running", gateways[0].Status, "the gateway's status")
 	assert.Equal(t, []hcRoute{{Destination: "0.0.0.0/0", Gateway: gatewayAddress}}, networks[0].Routes, "the network's routes")
+}
+
+func TestSubscribe_TheBuilderJoinsTheNetworkOnlyOnceTheGatewayHoldsItsAddress(t *testing.T) {
+	e := newEnv(t)
+
+	last := e.engine().settle(e.building)
+
+	require.NoError(t, last.err())
+	networks, err := e.hetzner.ListNetworks(e.ctx(), subscriptionSelector(testSub))
+	require.NoError(t, err)
+	require.Len(t, networks, 1)
+	assert.Equal(t, gatewayAddress, e.hetzner.byRole(t, roleGateway)[0].PrivateIPs[networks[0].ID], "the gateway's address")
+	builder := e.hetzner.byRole(t, roleBuilder)[0].PrivateIPs[networks[0].ID]
+	assert.NotEmpty(t, builder, "the builder runs off the network, with no route to the gateway")
+	assert.NotEqual(t, gatewayAddress, builder, "the builder's address")
+}
+
+func TestSubscribe_AServerAttachThatLandedButFailedItsCallIsDoneOnTheNextEnsure(t *testing.T) {
+	for _, r := range []role{roleGateway, roleBuilder} {
+		t.Run(string(r), func(t *testing.T) {
+			e := newEnv(t)
+			e.hetzner.failAttach[r] = errors.New("context deadline exceeded while waiting for the attach action")
+			require.Error(t, e.converge(), "the ensure whose %s attach fails after it landed", r)
+
+			require.NoError(t, e.converge())
+
+			assert.True(t, e.building(), "the builder runs its build")
+			gw := e.hetzner.byRole(t, roleGateway)[0]
+			assert.Equal(t, []string{gatewayAddress}, slices.Collect(maps.Values(gw.PrivateIPs)), "the gateway's addresses")
+		})
+	}
 }
 
 func TestSubscribe_RefusesBeforeAnyChange(t *testing.T) {

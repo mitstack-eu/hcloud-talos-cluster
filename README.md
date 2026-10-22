@@ -78,11 +78,13 @@ function a subscribe takes its step from. A run moves through these steps:
    the last two on a load balancer with no network, so the attach comes first.
 2. One call mints the cluster's keys, renders the machine configuration with
    `nodeconfig.Render`, and creates the gateway and the builder, both
-   stopped. It waits on the two creates together. The keys exist only in that
-   call, so both servers are made in it.
+   stopped and off the network. It waits on the two creates together. The
+   keys exist only in that call, so both servers are made in it.
 3. The next calls attach the gateway at `10.0.0.2` before its first boot,
-   power it on, and then power on the builder, which pulls imager through the
-   gateway.
+   then attach the builder, power the gateway on, and then power on the
+   builder, which pulls imager through the gateway. Hetzner gives a server
+   that joins with no address the network's first free one. The builder
+   therefore joins after the gateway, or it would take `10.0.0.2` itself.
 4. The builder builds the image and powers itself off. A call that finds it
    off, with a finished power-on in Hetzner's record of its actions, starts
    the snapshot of its disk and returns without waiting, since imaging can
