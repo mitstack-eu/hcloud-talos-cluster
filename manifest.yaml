@@ -21,15 +21,12 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.2.1
+  version: 0.2.2
   releaseClass: correctness-fix
   releaseNote: >-
-    A subscribe now reaches its running node, because the builder joins the
-    network only once the gateway holds 10.0.0.2. Hetzner gives a server
-    joining with no address the first free one, so the builder took the
-    gateway's address and every gateway attach failed with ip_not_available.
-    The block also stops accepting cpx22, a server type the platform's
-    hetzner.server type refuses at subscribe.
+    The builder now finishes the cluster's image, because imager writes its
+    4.2 GiB raw disk to the builder's disk instead of a 2 GiB tmpfs that
+    could never hold it.
   description: >
     Runs a one-node Talos Kubernetes cluster on Hetzner Cloud in fsn1, nbg1
     or hel1, booted from its own image with no user data, with Argo CD

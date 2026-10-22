@@ -3,9 +3,9 @@
 # writes it over the builder's own disk and powers the builder off, so the
 # block can snapshot that disk for the node to boot from.
 # Usage: build-image.sh <imager image by digest> <machine configuration> <network router>
-#   BUILD_WORK_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS, BUILD_RESOLV_CONF and
-#   BUILD_PROC default to /mnt/mitstack-build, /dev/sda, 30, /etc/resolv.conf
-#   and /proc.
+#   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
+#   BUILD_RESOLV_CONF and BUILD_PROC default to /mnt/mitstack-build,
+#   /var/lib/mitstack-build, /dev/sda, 30, /etc/resolv.conf and /proc.
 # It exists because the image embeds every key of the cluster, so it is built
 # inside the cluster's own Hetzner project and imager's output, which prints
 # that configuration, is discarded. A failed step leaves the builder running,
@@ -13,6 +13,8 @@
 set -euo pipefail
 
 readonly work=${BUILD_WORK_DIR:-/mnt/mitstack-build}
+# out lies on the disk, since imager writes its whole 4.2 GiB raw disk there before compressing it.
+readonly out=${BUILD_OUT_DIR:-/var/lib/mitstack-build}
 readonly disk=${BUILD_DISK:-/dev/sda}
 readonly attempts=${BUILD_PULL_ATTEMPTS:-30}
 readonly resolv_conf=${BUILD_RESOLV_CONF:-/etc/resolv.conf}
@@ -47,10 +49,10 @@ build() {
   local imager=$1 config=$2
   mkdir -p "$work"
   mountpoint -q "$work" || mount -t tmpfs -o size=2g tmpfs "$work"
-  mkdir -p "$work/in" "$work/out"
+  mkdir -p "$work/in" "$out"
   install -m 0600 "$config" "$work/in/config.yaml"
   rm -f "$config"
-  if ! docker run --rm --privileged -v /dev:/dev -v "$work/in:/in:ro" -v "$work/out:/out" \
+  if ! docker run --rm --privileged -v /dev:/dev -v "$work/in:/in:ro" -v "$out:/out" \
     "$imager" hcloud --arch amd64 --embedded-config-path /in/config.yaml > /dev/null 2>&1; then
     rm -f "$work/in/config.yaml"
     fail "imager failed; its output is discarded because it holds every cluster key"
@@ -58,12 +60,17 @@ build() {
   rm -f "$work/in/config.yaml"
 }
 
+# write_disk reads the image from the tmpfs, since dd overwrites the disk that holds out, and syncs the removed out
+# before dd, so no writeback of it lands on the image.
 write_disk() {
-  local images=("$work"/out/*.raw.zst)
+  local images=("$out"/*.raw.zst)
   if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then
-    fail "imager left no single image in $work/out"
+    fail "imager left no single image in $out"
   fi
-  zstd -dc "${images[0]}" | dd of="$disk" bs=4M oflag=direct status=none
+  cp "${images[0]}" "$work/image.raw.zst"
+  rm -rf "$out"
+  sync
+  zstd -dc "$work/image.raw.zst" | dd of="$disk" bs=4M oflag=direct status=none
   sync
 }
 

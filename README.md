@@ -85,7 +85,10 @@ function a subscribe takes its step from. A run moves through these steps:
    builder, which pulls imager through the gateway. Hetzner gives a server
    that joins with no address the network's first free one. The builder
    therefore joins after the gateway, or it would take `10.0.0.2` itself.
-4. The builder builds the image and powers itself off. A call that finds it
+4. The builder builds the image and powers itself off. imager writes its
+   whole raw disk, about 4.2 GiB, to the builder's disk before compressing
+   it, and the compressed image moves to a tmpfs before `dd` writes it over
+   that disk. A call that finds it
    off, with a finished power-on in Hetzner's record of its actions, starts
    the snapshot of its disk and returns without waiting, since imaging can
    outlast a call. Once the snapshot reads available, one call deletes the
