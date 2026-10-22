@@ -71,8 +71,7 @@ const (
 	buildDeadline = 30 * time.Minute
 )
 
-// gatewayServerTypes are the gateway's types by preference, each x86 with 2 vCPU and 4 GB, so a sold-out type alone does
-// not stop a cluster.
+// gatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.
 var gatewayServerTypes = []string{"cx23", "cpx22"}
 
 // allowedLocations are the three locations of the eu-central network zone the cluster's subnet lives in.
