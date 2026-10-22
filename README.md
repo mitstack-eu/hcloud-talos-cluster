@@ -85,12 +85,13 @@ function a subscribe takes its step from. A run moves through these steps:
    builder, which pulls imager through the gateway. Hetzner gives a server
    that joins with no address the network's first free one. The builder
    therefore joins after the gateway, or it would take `10.0.0.2` itself.
-4. The builder builds the image and powers itself off. imager writes its
-   whole raw disk, about 4.2 GiB, to the builder's disk before compressing
-   it, and the compressed image moves to a tmpfs before `dd` writes it over
-   that disk. A call that finds it
-   off, with a finished power-on in Hetzner's record of its actions, starts
-   the snapshot of its disk and returns without waiting, since imaging can
+4. The builder builds the image with imager, Sidero Labs' image builder, and
+   powers itself off. imager first writes the whole uncompressed disk, about
+   4.2 GiB, into a directory on the builder's own disk. The builder then
+   copies the compressed image, about 230 MB, into memory, because `dd`
+   writes the image over that same disk. A call that finds the builder off,
+   with a finished power-on in Hetzner's record of its actions, starts the
+   snapshot of its disk and returns without waiting, since a snapshot can
    outlast a call. Once the snapshot reads available, one call deletes the
    builder and the next creates the node from the snapshot.
 5. The gateway starts etcd, the store that holds the cluster's state, on the
