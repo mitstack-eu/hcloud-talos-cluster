@@ -539,6 +539,7 @@ func TestSubscribe_TheClusterCarriesTheEnrolmentDigestAndTheClusterRepositoryWhi
 	first := p.post("subscribe")
 	p.settle(func() bool { return strings.HasPrefix(e.observe().StatusDetail, "the cluster has sent no node report") })
 	waiting := p.post("subscribe")
+	nodesWhileWaiting := len(e.hetzner.byRole(t, roleNode))
 	e.quietNode = false
 	final := p.settle(nil)
 
@@ -550,6 +551,7 @@ func TestSubscribe_TheClusterCarriesTheEnrolmentDigestAndTheClusterRepositoryWhi
 	}
 	assert.Nil(t, first.observed(resCluster), "the first subscribe, before the node exists, observed the cluster")
 	require.True(t, waiting.pending, "a subscribe before the node reports: %s", waiting.detail)
+	assert.Equal(t, 3, nodesWhileWaiting, "nodes while the cluster waits on their report")
 	cluster := waiting.observed(resCluster)
 	require.NotNil(t, cluster, "the subscribe after the node exists did not observe the cluster")
 	assert.Equal(t, contract.Unknown, cluster.State, "the cluster's state")
