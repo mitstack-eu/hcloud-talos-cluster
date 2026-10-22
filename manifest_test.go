@@ -71,7 +71,7 @@ func TestReadParams_EveryServerTypeTheBlockCreatesIsOneTheHetznerServerTypeAllow
 	}
 	require.NotEmpty(t, allowed, "the %s type's serverType input lists no allowed value", typeServer)
 
-	for _, st := range append([]string{gatewayServerType, defaultServerType}, allowedServerTypes...) {
+	for _, st := range slices.Concat(gatewayServerTypes, []string{defaultServerType}, allowedServerTypes) {
 		assert.Contains(t, allowed, st, "the block takes server type %s, which the platform refuses at subscribe", st)
 	}
 }
