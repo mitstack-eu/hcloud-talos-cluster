@@ -127,10 +127,10 @@ func (st clusterState) duplicates() []string {
 		add(string(r)+" server", idsOf(st.servers[r], serverID))
 	}
 	for _, loc := range clusterLocations {
-		add(loc.name+" node server", idsOf(serversIn(st.servers[roleNode], loc.name), serverID))
-		for _, r := range []role{roleAPI, roleIngress} {
-			add(loc.name+" "+string(r)+" load balancer", idsOf(loadBalancersIn(st.loadBalancers[r], loc.name), loadBalancerID))
-		}
+		add(loc+" node server", idsOf(serversIn(st.servers[roleNode], loc), serverID))
+	}
+	for _, r := range []role{roleAPI, roleIngress} {
+		add(string(r)+" load balancer", idsOf(st.loadBalancers[r], loadBalancerID))
 	}
 	return out
 }
@@ -179,12 +179,10 @@ func (st clusterState) createdResources(subID string, repo clusterRepo) []contra
 	add(resNetwork, resNetwork, "networkId", network.ID, networkOK)
 	firewall, firewallOK := st.firewall()
 	add(resFirewall, resFirewall, "firewallId", firewall.ID, firewallOK)
-	for _, loc := range clusterLocations {
-		api, apiOK := st.loadBalancerIn(roleAPI, loc.name)
-		add(located(resPrivateLB, loc.name), typeLoadBalancer, "loadBalancerId", api.ID, apiOK)
-		ingress, ingressOK := st.loadBalancerIn(roleIngress, loc.name)
-		add(located(resPublicLB, loc.name), typeLoadBalancer, "loadBalancerId", ingress.ID, ingressOK)
-	}
+	api, apiOK := st.loadBalancerIn(roleAPI, gatewayLocation)
+	add(located(resPrivateLB, gatewayLocation), typeLoadBalancer, "loadBalancerId", api.ID, apiOK)
+	ingress, ingressOK := st.loadBalancerIn(roleIngress, gatewayLocation)
+	add(located(resPublicLB, gatewayLocation), typeLoadBalancer, "loadBalancerId", ingress.ID, ingressOK)
 	repoIdentity := map[string]string{"repo": repo.fullName()}
 	out = append(out,
 		contract.CreatedResource{Name: resRepository, Type: typeRepository, Identity: repoIdentity},
@@ -192,8 +190,8 @@ func (st clusterState) createdResources(subID string, repo clusterRepo) []contra
 	gw, gwOK := st.server(roleGateway)
 	add(resGateway, typeServer, "serverId", gw.ID, gwOK)
 	for _, loc := range clusterLocations {
-		node, nodeOK := st.nodeIn(loc.name)
-		add(located(resNode, loc.name), typeServer, "serverId", node.ID, nodeOK)
+		node, nodeOK := st.nodeIn(loc)
+		add(located(resNode, loc), typeServer, "serverId", node.ID, nodeOK)
 	}
 	return append(out, contract.CreatedResource{Name: resCluster, Type: resCluster, Identity: map[string]string{"subscriptionId": subID}})
 }

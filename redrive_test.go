@@ -94,7 +94,7 @@ func TestSubscribe_ARedriveSentTwiceAtEachSignalMakesEveryResourceOnce(t *testin
 	snaps, err := e.hetzner.ListSnapshots(e.ctx(), subscriptionSelector(testSub))
 	require.NoError(t, err)
 	assert.Len(t, snaps, 1, "snapshots")
-	assert.Equal(t, 13, e.hetzner.count(), "four servers, six load balancers, a network, a firewall and a snapshot")
+	assert.Equal(t, 9, e.hetzner.count(), "four servers, two load balancers, a network, a firewall and a snapshot")
 }
 
 func TestVerbSemantics_ARedrivenSubscribeResumesTheBuildAndChangesNothingMadeBefore(t *testing.T) {

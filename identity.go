@@ -76,7 +76,7 @@ func resourceName(appName, subscriptionID string, r role) string {
 	return prefix + tail
 }
 
-// locatedName is resourceName with the location after the role, since the cluster holds one of the role in each.
+// locatedName is resourceName with the location after the role, so the name says where the resource runs.
 func locatedName(appName, subscriptionID string, r role, loc string) string {
 	return resourceName(appName, subscriptionID, role(string(r)+"-"+loc))
 }

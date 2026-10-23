@@ -32,32 +32,36 @@ address.
 The one gateway lives in `fsn1` and carries the network's only default route,
 so losing `fsn1` stops every node's outbound traffic.
 
+The cluster's one load balancer pair, an API and an ingress load balancer,
+sits in `fsn1` beside the gateway. Losing `fsn1` already stops every node's
+outbound traffic, so a pair in another location would add load balancers to
+the cluster but no location it survives. Each load balancer reaches the nodes
+in `nbg1` and `hel1` by private IP over the cluster's network. The
+[Hetzner load balancer FAQ](https://docs.hetzner.com/cloud/load-balancers/faq/)
+allows targets in other locations of the load balancer's network zone, here
+`eu-central`, and asks that a server target share its Cloud Network.
+
 | Resource | What it does | Where |
 |---|---|---|
 | Network `10.0.0.0/16` | Holds every server and load balancer, and routes `0.0.0.0/0` to the gateway at `10.0.0.2` | `ensureNetwork` in `resource.go` |
 | Firewall | Holds no rule, and is applied to every server, so nothing reaches a server from the internet | `createFirewall` in `resource.go` |
 | Gateway | The only server with a public address, in `fsn1`. It runs the kit's cloud-config, which forwards and records the nodes' DNS, NTP and HTTPS and serves their image mirror. It is a `cx23`, or a `cpx22` when Hetzner reads `cx23` as sold out in `fsn1` | `install` and `orderableGatewayType` in `install.go` |
-| API load balancer, one per location | Carries the Kubernetes API on port 6443 on the private network, with no public interface | `apiLoadBalancer` and `loadBalancerStep` in `resource.go` |
-| Ingress load balancer, one per location | Serves ports 80 and 443 on its public address to the NodePorts 30080 and 30081, with PROXY protocol | `ingressLoadBalancer` and `loadBalancerStep` in `resource.go` |
+| API load balancer, in `fsn1` | Carries the Kubernetes API on port 6443 on the private network to every node, with no public interface | `apiLoadBalancer` and `loadBalancerStep` in `resource.go` |
+| Ingress load balancer, in `fsn1` | Serves ports 80 and 443 on its public address to every node's NodePorts 30080 and 30081, with PROXY protocol | `ingressLoadBalancer` and `loadBalancerStep` in `resource.go` |
 | Builder | A short-lived server in `fsn1` that builds the image with imager, writes it over its own disk and powers off. It freezes its root filesystem before the write, and copies of `bash`, `zstd` and `dd` in memory then write the image and power it off, so the script runs nothing from the disk being overwritten. Its user data carries the machine configuration gzipped, in cloud-init's `gz+b64` encoding, since as text it is over Hetzner's 32 KiB user data limit | `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
 | Snapshot | The builder's disk, which every node boots from | `builderStep` in `resource.go` |
 | Node, one per location | A control-plane node booted from the snapshot and named after its location, such as `shop-sub-0123-node-nbg1` | `missingNodeStep` and `createNode` in `resource.go` |
 | Cluster repository | A private GitHub repository, `<appName>-cluster`, that Argo CD syncs | `repository.go` |
 
-Each load balancer joins the network at a fixed address, so none takes the
-gateway's `10.0.0.2`. `clusterLocations` in `resource.go` holds the
-addresses:
+Each load balancer joins the network at a fixed address, so neither takes the
+gateway's `10.0.0.2`. The API load balancer holds `10.0.0.3`, the
+control-plane endpoint, and the ingress load balancer holds `10.0.0.4`, as
+`apiAddress` and `ingressAddress` in `resource.go` set them.
 
-| Location | API load balancer | Ingress load balancer |
-|---|---|---|
-| `fsn1` | `10.0.0.3`, the control-plane endpoint | `10.0.0.4` |
-| `nbg1` | `10.0.0.5` | `10.0.0.6` |
-| `hel1` | `10.0.0.7` | `10.0.0.8` |
-
-The API server's certificate names all three API addresses. Every load
-balancer finds its targets by the label `mitstack.dev/role=node`, so it
-reaches the nodes of all three locations, and a replaced node takes its place
-with no edit to any load balancer. Every Hetzner resource carries the labels
+The API server's certificate names the API load balancer's address. Both load
+balancers find their targets by the label `mitstack.dev/role=node`, so they
+reach the nodes of all three locations, and a replaced node takes its place
+with no edit to either load balancer. Every Hetzner resource carries the labels
 `mitstack.dev/block` and `mitstack.dev/subscription`, and every verb finds the
 cluster by them alone. A server's or load balancer's location is read from
 Hetzner's own record of it.
@@ -89,7 +93,7 @@ validate answers `pending` alone and the platform waits. `stepLeft` in
 function a subscribe takes its step from. A run moves through these steps:
 
 1. Calls create the network, the repository and the firewall. Each of the
-   six load balancers then takes its own calls, location by location: it is
+   two load balancers then takes its own calls, the API one first: it is
    created bare, attached to the network at its fixed address, and given its
    services and its target, and an API one has its public interface
    disabled. Hetzner refuses either of the last two on a load balancer with
@@ -164,8 +168,9 @@ server Hetzner cannot place in the location fails the subscribe with
 order neither gateway type, before any server is created. An install whose
 create fails deletes the gateway and the builder, so the next call installs
 anew. Two servers of one role in one location, such as two nodes in `nbg1`,
-make the cluster ambiguous, and every call refuses with `ambiguous-cluster`
-before it changes anything.
+make the cluster ambiguous, and so do two load balancers of one role in any
+locations. Every call then refuses with `ambiguous-cluster` before it changes
+anything.
 
 The cluster's keys exist only in the call that mints them, the builder's user
 data and the snapshot. A cluster that loses its gateway while its nodes run is
@@ -228,8 +233,8 @@ while it still reads unknown, so the platform holds them before any node enrols.
 |---|---|---|
 | `enrolmentTokenSha256`, the base32 SHA-256 digest of the nodes' one-time enrolment token, read from the gateway's `mitstack.dev/enrolment-sha256` label | Once the gateway carries that label and the marked cluster repository exists | Yes |
 | `clusterRepoUrl`, the web address of the cluster repository, such as `https://github.com/acme/shop-cluster` | Once the gateway carries that label and the marked cluster repository exists | Yes |
-| `privateEndpoint`, the `fsn1` API load balancer as `https://10.0.0.3:6443` | No | Yes |
-| `publicIpByLocation`, each location's ingress address, such as `{"fsn1":"203.0.113.10","nbg1":"203.0.113.20","hel1":"203.0.113.30"}` | No | Yes |
+| `privateEndpoint`, the API load balancer as `https://10.0.0.3:6443` | No | Yes |
+| `publicIpByLocation`, the ingress load balancer's public address under its location, such as `{"fsn1":"203.0.113.10"}` | No | Yes |
 | `subscriptionId` | No | Yes |
 
 The cluster resource carries both enrolment outputs or neither, and no other
@@ -305,9 +310,9 @@ shellcheck scripts/*.sh
 
 | Test file | What it proves |
 |---|---|
-| `subscribe_test.go` | A node in each of the three locations on one network, a load balancer pair in each at its fixed addresses, one public address per location, no node with user data, only the gateway with a public address, every refusal, the builder's metrics in the build progress and the `image-build-failed` refusal, and the cluster's enrolment outputs while it waits on its nodes' report |
+| `subscribe_test.go` | A node in each of the three locations on one network, one API and one ingress load balancer in `fsn1` at their fixed addresses, the ingress address under `fsn1`, no node with user data, only the gateway with a public address, every refusal, the builder's metrics in the build progress and the `image-build-failed` refusal, and the cluster's enrolment outputs while it waits on its nodes' report |
 | `redrive_test.go` | One subscribe reaching all three nodes through the platform's re-drives, validate asking for one exactly when a subscribe has a step to take, at most one Hetzner action waited and one node created per call, and a doubled re-drive making nothing twice |
-| `userdata_test.go` | The builder's embedded configuration with every API address in its certificates and the cluster's components, its user data within Hetzner's limit, the gateway's two cloud-config parts, mirror and served manifests, the node report's `checks` member, and a default cluster's components, mirror and configuration documents against `testdata/default-cluster.golden` |
+| `userdata_test.go` | The builder's embedded configuration with the API load balancer's address in its certificates and the cluster's components, its user data within Hetzner's limit, the gateway's two cloud-config parts, mirror and served manifests, the node report's `checks` member, and a default cluster's components, mirror and configuration documents against `testdata/default-cluster.golden` |
 | `scripts_test.go` | The build, the first-node bootstrap and the cluster's credential calls |
 | `teardown_test.go` | Unsubscribe deletes every resource, the snapshot included |
 | `declared_resources_test.go`, `secrets_leak_test.go` | The operator kit's block guards and that no token reaches an answer or the logs |

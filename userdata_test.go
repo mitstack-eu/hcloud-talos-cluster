@@ -148,21 +148,17 @@ func TestBuilder_EmbedsAConfigurationThatCarriesTheReportTheCredentialsAndTheApp
 	require.NoError(t, err)
 	require.Len(t, networks, 1)
 	endpoint := testutil.Field(t, clusterDocs[0], "endpoint")
-	assert.Equal(t, "https://"+e.hetzner.lbsByLocation(t, roleAPI)["fsn1"].PrivateIPs[networks[0].ID]+":6443", endpoint, "the control-plane endpoint")
+	assert.Equal(t, "https://"+e.hetzner.loadBalancer(t, roleAPI).PrivateIPs[networks[0].ID]+":6443", endpoint, "the control-plane endpoint")
 	assert.Equal(t, []string{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress}, c.RunCmd[0], "the build command")
 }
 
-func TestBuilder_TheAPIServersCertificateNamesThePrivateLoadBalancerOfEveryLocation(t *testing.T) {
+func TestBuilder_TheAPIServersCertificateNamesTheAPILoadBalancer(t *testing.T) {
 	e := subscribedOnce(t)
 	config := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]).file(t, builderConfigPath)
 	networks, err := e.hetzner.ListNetworks(e.ctx(), subscriptionSelector(testSub))
 	require.NoError(t, err)
 	require.Len(t, networks, 1)
-	lbs := e.hetzner.lbsByLocation(t, roleAPI)
-	var want []any
-	for _, location := range clusterLocationNames {
-		want = append(want, lbs[location].PrivateIPs[networks[0].ID])
-	}
+	want := []any{e.hetzner.loadBalancer(t, roleAPI).PrivateIPs[networks[0].ID]}
 
 	docs := testutil.Documents(t, []byte(config.Content))
 
