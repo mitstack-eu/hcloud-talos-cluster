@@ -469,27 +469,25 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 }
 
 func TestBuilder_TheNodeReportDeclaresItsContractAndCarriesNoneOfTheVerdictsChecks(t *testing.T) {
-	e := subscribedOnce(t)
-	cronJobs := testutil.Kind(inlineManifests(t, builderConfiguration(t, e))["mitstack-node-report"], "CronJob")
-	require.Len(t, cronJobs, 1, "node report CronJobs")
-	script := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command", "2").(string)
-
-	posted := runNodeReport(t, script)
+	posted := runNodeReport(t, nodeReportScript(t))
 
 	assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted["checks"], "the node report's checks member")
 }
 
 func TestBuilder_TheNodeReportPostsAnErrorNamingTheReadThatFailed(t *testing.T) {
-	e := subscribedOnce(t)
-	cronJobs := testutil.Kind(inlineManifests(t, builderConfiguration(t, e))["mitstack-node-report"], "CronJob")
-	require.Len(t, cronJobs, 1, "node report CronJobs")
-	script := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command", "2").(string)
-
-	posted, out, err := postNodeReport(t, script, `[ "$*" != "get nodes -o json" ] || { echo 'error: forbidden' >&2; exit 1; }; echo '{"items": []}'`)
+	posted, out, err := postNodeReport(t, nodeReportScript(t), `[ "$*" != "get nodes -o json" ] || { echo 'error: forbidden' >&2; exit 1; }; echo '{"items": []}'`)
 
 	require.Error(t, err, "the node report exits non-zero once it has posted the error")
 	require.NotNil(t, posted, "the node report posted nothing: %s", out)
 	assert.Equal(t, map[string]any{"read": "kubectl get nodes", "exitStatus": float64(1), "stderr": "error: forbidden\n"}, posted["error"])
+}
+
+// nodeReportScript returns the script the builder's node report CronJob runs.
+func nodeReportScript(t *testing.T) string {
+	t.Helper()
+	cronJobs := testutil.Kind(inlineManifests(t, builderConfiguration(t, subscribedOnce(t)))["mitstack-node-report"], "CronJob")
+	require.Len(t, cronJobs, 1, "node report CronJobs")
+	return testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command", "2").(string)
 }
 
 // runNodeReport runs script against a cluster with no objects and returns the body the platform received.
@@ -502,7 +500,7 @@ func runNodeReport(t *testing.T, script string) map[string]any {
 	return posted
 }
 
-// postNodeReport runs script with kubectl as its kubectl and returns the body the platform received, or nil.
+// postNodeReport runs script with the given kubectl stub and returns the body the platform received, or nil.
 func postNodeReport(t *testing.T, script, kubectl string) (map[string]any, string, error) {
 	t.Helper()
 	posted := make(chan map[string]any, 1)
