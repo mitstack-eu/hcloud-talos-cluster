@@ -33,15 +33,13 @@ The one gateway lives in `fsn1` and carries the network's only default route,
 so losing `fsn1` stops every node's outbound traffic.
 
 The cluster's one load balancer pair, an API and an ingress load balancer,
-sits in `fsn1` beside the gateway. A pair in another location would keep
-nothing serving once `fsn1` is lost, since every node's egress runs through
-the gateway there. Each load balancer reaches the nodes in `nbg1` and `hel1`
-by private IP over the cluster's network. The
+sits in `fsn1` beside the gateway. Losing `fsn1` already stops every node's
+outbound traffic, so a pair in another location would add load balancers to
+the cluster but no location it survives. Each load balancer reaches the nodes
+in `nbg1` and `hel1` by private IP over the cluster's network. The
 [Hetzner load balancer FAQ](https://docs.hetzner.com/cloud/load-balancers/faq/)
 allows targets in other locations of the load balancer's network zone, here
-`eu-central`, and asks that a server target share its Cloud Network. A
-cluster's two load balancers also fit the load balancer limit of the
-platform's Hetzner project, which six do not.
+`eu-central`, and asks that a server target share its Cloud Network.
 
 | Resource | What it does | Where |
 |---|---|---|

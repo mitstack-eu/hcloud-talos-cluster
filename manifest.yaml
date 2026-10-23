@@ -4,9 +4,9 @@
 # default route goes to a gateway, a firewall with no rule, and in fsn1, the
 # gateway's location, a private load balancer for the Kubernetes API and a
 # public one for ports 80 and 443 that both find every node by label, and a
-# private cluster repository on GitHub. The gateway, the cluster's only server with a public
-# address, forwards and records the nodes' traffic and serves their image
-# mirror. A short-lived builder builds the cluster's own disk image with the
+# private cluster repository on GitHub. The gateway, the cluster's only
+# server with a public address, forwards and records the nodes' traffic and
+# serves their image mirror. A short-lived builder builds the cluster's own disk image with the
 # machine configuration embedded, writes it to its disk and powers off, and
 # that disk becomes the snapshot every node boots from with no user data.
 #
