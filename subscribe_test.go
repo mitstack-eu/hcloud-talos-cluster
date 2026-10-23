@@ -15,6 +15,7 @@ import (
 
 	"github.com/mitstack-eu/operator-kit/v3/contract"
 	"github.com/mitstack-eu/operator-kit/v3/handler"
+	"github.com/mitstack-eu/talos-cluster-kit/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -597,6 +598,22 @@ func TestSubscribe_TheClusterCarriesTheEnrolmentDigestAndTheClusterRepositoryWhi
 		assert.Equal(t, value, final.observed(resCluster).Outputs[name], "the cluster's output %s once it is present", name)
 		assert.Equal(t, value, final.outputs[name], "the cluster's provided output %s", name)
 	}
+}
+
+func TestSubscribe_TheClusterOutputsTheIssuerItsNodesSignTokensForInAnIssuerBucketOfItsOwn(t *testing.T) {
+	e := newEnv(t)
+
+	obs := e.subscribe()
+
+	require.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
+	bucket := obs.Outputs["issuerBucket"]
+	assert.Regexp(t, `^mitstack-oidc-[a-z2-7]{26}$`, bucket, "issuerBucket")
+	assert.Equal(t, "https://"+bucket+".s3.eu-central-1.amazonaws.com/"+testSub, obs.Outputs["issuerUrl"], "issuerUrl")
+	config := decodeCloudConfig(t, e.hetzner.specFor(t, roleBuilder).UserData).file(t, builderConfigPath)
+	accounts := testutil.Kind(testutil.Documents(t, []byte(config.Content)), "KubeServiceAccountConfig")
+	require.Len(t, accounts, 1, "the builder's machine configuration")
+	assert.Equal(t, obs.Outputs["issuerUrl"], testutil.Field(t, accounts[0], "issuer", "issuerURL"),
+		"the issuer every node signs service-account tokens for")
 }
 
 func TestObserve_AWaitingClusterWhoseRepositoryCannotBeNamedCarriesNeitherOutputAndSaysWhy(t *testing.T) {
