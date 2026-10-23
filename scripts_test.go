@@ -30,7 +30,8 @@ const fakeLoader = "ld-linux-x86-64.so.2"
 var fakeLibraries = []string{"libtinfo.so.6", "liblzma.so.5", "libc.so.6"}
 
 // buildFakes stand in for the builder's commands, docker run failing as imager does when /out lies on a tmpfs smaller
-// than imagerPeakBytes, fsfreeze turning every fake left on the disk into a recorder, and FAKE_FAILING naming one to fail.
+// than imagerPeakBytes, fsfreeze turning every fake left on the disk into a recorder, sleep recording what the disk and
+// the sysrq trigger held when it ran, and FAKE_FAILING naming one to fail.
 func buildFakes(imagerExit int) map[string]string {
 	exit := strconv.Itoa(imagerExit)
 	return map[string]string{
@@ -66,6 +67,8 @@ cat "$2"`,
 		"dd": `echo "dd: a diagnostic on stderr" >&2
 [ "${FAKE_FAILING:-}" != dd ] || exit 1
 cat > "${BUILD_DISK}"`,
+		"sleep": `printf 'disk %s, sysrq-trigger %s\n' "$(cat "$BUILD_DISK")" "$(cat "$BUILD_PROC/sysrq-trigger" 2> /dev/null || echo unwritten)" \
+  >> "$HOME/at-pause"`,
 		"docker": `if [ "$1" = run ]; then
   out=$(printf '%s\n' "$@" | sed -n 's#^\(.*\):/out$#\1#p')
   echo "every key of the cluster"
@@ -218,10 +221,11 @@ func TestBuildImage_FreezesTheRootThenOverwritesAndPowersOffFromTheTmpfsAlone(t 
 	freeze := slices.Index(calls, "fsfreeze -f /")
 	require.GreaterOrEqual(t, freeze, 0, "the root filesystem is never frozen: %v", calls)
 	runs := run.loaderRuns(t)
-	require.Len(t, runs, 3, "the loader runs bash, then zstd and dd: %v", calls)
+	require.Len(t, runs, 4, "the loader runs bash, then zstd and dd, then sleep: %v", calls)
 	assert.Equal(t, "bash", filepath.Base(runs[0].program), "the final stage runs in bash: %v", runs)
 	assert.ElementsMatch(t, []string{"zstd", "dd"}, []string{filepath.Base(runs[1].program), filepath.Base(runs[2].program)},
 		"the final stage pipes zstd into dd: %v", runs)
+	assert.Equal(t, "sleep", filepath.Base(runs[3].program), "the final stage pauses after the write: %v", runs)
 	atFreeze := run.tmpfsAtFreeze(t)
 	for _, loaded := range runs {
 		assert.Greater(t, loaded.call, freeze, "%s ran before the freeze: %v", loaded.program, calls)
@@ -232,7 +236,8 @@ func TestBuildImage_FreezesTheRootThenOverwritesAndPowersOffFromTheTmpfsAlone(t 
 				"%s loads its libraries from %s, which held no copy of %s at the freeze", loaded.program, loaded.libraries, library)
 		}
 	}
-	assert.Equal(t, "C\nC\nC\n", run.recorded("loader-locales"), "bash, zstd and dd do not all run in the C locale, which reads no locale file")
+	assert.Equal(t, "C\nC\nC\nC\n", run.recorded("loader-locales"),
+		"bash, zstd, dd and sleep do not all run in the C locale, which reads no locale file")
 	assert.Empty(t, run.recorded("ran-after-freeze"), "programs on the disk ran after the freeze")
 	assert.Contains(t, calls, "dd of="+filepath.Join(run.dir, "disk")+" bs=4M oflag=direct conv=fsync status=none")
 	assert.False(t, slices.ContainsFunc(calls, func(call string) bool { return strings.HasPrefix(call, "sync ") }),
@@ -240,6 +245,15 @@ func TestBuildImage_FreezesTheRootThenOverwritesAndPowersOffFromTheTmpfsAlone(t 
 	sysrq, _ := os.ReadFile(filepath.Join(run.dir, "proc", "sysrq-trigger"))
 	assert.Equal(t, "o", string(sysrq), "the final stage powers the builder off")
 	assert.NotContains(t, run.out, "a diagnostic on stderr", "the final stage printed after the freeze")
+}
+
+func TestBuildImage_PausesASecondBetweenTheImageWriteAndThePowerOff(t *testing.T) {
+	run := runBuild(t, 0)
+
+	require.NoError(t, run.err, run.out)
+	assert.Contains(t, run.tools.Calls(t), "sleep 1", "the final stage does not pause for one second")
+	assert.Equal(t, "disk talos image, sysrq-trigger unwritten\n", run.recorded("at-pause"),
+		"the pause does not come once, after dd wrote the whole image and before the power-off")
 }
 
 func TestBuildImage_AFailedOverwriteAfterTheFreezeKeepsTheBuilderRunning(t *testing.T) {
