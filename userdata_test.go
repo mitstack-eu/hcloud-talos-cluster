@@ -369,6 +369,27 @@ func TestGateway_MirrorsCloudNativePGAndKyvernoByDigestAndFetchesTheirManifestsF
 	assert.Equal(t, gateway.ReleaseURL(release)+"/components/cloudnative-pg/cloudnative-pg.yaml", fetched["cloudnative-pg.yaml"], "where the gateway fetches CloudNativePG")
 }
 
+func TestCluster_KeepsEachClaimOnItsNodesUserVolumeThroughTheLocalPathProvisioner(t *testing.T) {
+	e := subscribedOnce(t)
+	release, err := kitRelease()
+	require.NoError(t, err)
+
+	config := builderConfiguration(t, e)
+	kit := decodeCloudConfig(t, gatewayParts(t, e.hetzner.userData[e.hetzner.byRole(t, roleGateway)[0].ID])[0])
+
+	assert.Contains(t, testutil.Kind(config, "UserVolumeConfig"),
+		map[string]any{"apiVersion": "v1alpha1", "kind": "UserVolumeConfig", "name": components.LocalPathVolume, "volumeType": "directory"})
+	assert.Contains(t, strings.Fields(kit.file(t, "/etc/mitstack-gateway/manifests.txt").Content),
+		gateway.ReleaseURL(release)+"/components/local-path-provisioner/local-path-provisioner.yaml", "where the gateway fetches the provisioner")
+	var mirrored []string
+	for _, ref := range strings.Fields(kit.file(t, "/etc/mitstack-gateway/images.txt").Content) {
+		image, err := components.ParseImage(ref)
+		require.NoError(t, err, "the mirror's image list")
+		mirrored = append(mirrored, image.Name)
+	}
+	assert.Subset(t, mirrored, []string{"docker.io/rancher/local-path-provisioner", "docker.io/library/busybox"}, "the provisioner's and its helper's images")
+}
+
 func adminCertificate(t *testing.T, talosconfig string) *x509.Certificate {
 	t.Helper()
 	var cfg struct {
