@@ -14,7 +14,7 @@ flowchart LR
     block -- "creates" --> repo["GitHub repo<br/>#lt;appName#gt;-cluster"]
     block -- "creates" --> hetzner
     subgraph hetzner["Hetzner Cloud"]
-        lb["API and ingress<br/>load balancers, fsn1"]
+        lb["Load balancers<br/>API and web, fsn1"]
         subgraph cluster["Your cluster"]
             n1["Node<br/>Falkenstein fsn1"]
             n2["Node<br/>Nuremberg nbg1"]
@@ -42,8 +42,8 @@ block. [Params, connections and outputs](docs/reference.md) has every table.
 
 ## Use it
 
-1. On the mitstack console's Capabilities page, connect Hetzner with a Hetzner
-   Cloud project's read and write API token, and connect GitHub.
+1. In the mitstack console's [Capabilities page](https://api.mitstack.dev/capabilities),
+   connect GitHub, and Hetzner with a Cloud project's read and write API token.
 2. Subscribe your app to this block, and fill in `appName`.
 3. Once the cluster is ready, in up to 45 minutes, commit to the repo's `cluster/`.
 
@@ -67,8 +67,7 @@ sequenceDiagram
     participant G as GitHub
     participant C as Cluster
     You->>M: Subscribe your app
-    M->>O: subscribe, with params and tokens
-    Note over M,O: Each step below is its own request
+    M->>O: subscribe, then again for each step
     O->>H: Create the network
     O->>G: Create the cluster repo
     O->>H: Create firewall and load balancers
