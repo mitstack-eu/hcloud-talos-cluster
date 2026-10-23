@@ -1,23 +1,235 @@
 # hcloud-talos-cluster
 
-This repository holds hcloud-talos-cluster, the mitstack block that builds a
-Talos Kubernetes cluster on Hetzner Cloud servers and provides the type
-`hetzner.kubernetes-cluster`. It is for the engineers who build and maintain
-the block. A block is a unit of infrastructure an app subscribes to, and its
-operator is the service that serves the block's lifecycle calls, as
-[the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md)
-defines. Talos Linux is an operating system that runs only Kubernetes and is
+This repository holds hcloud-talos-cluster, a mitstack block that gives an app
+its own Kubernetes cluster on Hetzner Cloud. This README is for anyone who
+wants to use the block, or to learn from it how a block is made, and it
+assumes no earlier knowledge of mitstack. The first four sections say what the
+block provides, what it needs, how it works and what each file is for. The
+sections after them give the detail.
+
+A few mitstack words recur below. Each is defined in full in
+[the workspace glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md).
+
+| Word | What it means here |
+|---|---|
+| Block | A ready-made service that mitstack runs for you, such as a database or, here, a Kubernetes cluster |
+| App | Your project in mitstack, which uses one or more blocks |
+| Subscribe | What an app does to start using a block. Unsubscribe is how it stops |
+| Operator | The program in this repository, which runs as a web service. mitstack sends it a request, signed with mitstack's own key, each time an app subscribes to the block, checks on it or unsubscribes |
+| Param | A setting you fill in when your app subscribes, such as the app's name |
+| Connection | An account you have linked to your app in mitstack, such as a Hetzner Cloud project or a GitHub account. mitstack passes the account's token to the block with each request, and the block acts for you with it |
+| Resource | One thing the block creates and tracks, such as a server, a load balancer or the cluster repository |
+| Output | A value the block hands back once it has built something, such as the cluster's address, which mitstack records for the app |
+| Manifest | The file `manifest.yaml`, which tells mitstack what the block is, what it builds and which requests it answers |
+
+## What the block provides
+
+When your app subscribes, the block builds a Kubernetes cluster that belongs to
+that app alone. Kubernetes is the common system for running containers across
+several servers. The cluster has three servers, called nodes, one in each of
+Hetzner's three European locations: `fsn1` in Falkenstein, `nbg1` in Nuremberg
+and `hel1` in Helsinki.
+
+The cluster's state store, etcd, is designed to keep working while any two of
+the three nodes are up. All outbound traffic leaves through one server, the
+gateway. Two load balancers, which spread incoming traffic across the nodes,
+sit beside it in `fsn1`. Losing `fsn1` therefore stops the cluster's outbound
+and web traffic.
+
+The block also creates a private GitHub repository for the cluster, named
+`<appName>-cluster`. Argo CD, a tool that runs inside the cluster, applies what
+that repository holds to the cluster. A commit to the repository's `cluster/`
+folder therefore changes what runs on the cluster.
+
+In mitstack's terms, the block provides the type `hetzner.kubernetes-cluster`,
+which the `provides` list in `manifest.yaml` declares. A type is the catalogue name of
+one kind of resource. mitstack matches a block that requires a type with a
+block that provides it.
+
+The block hands back these outputs. `observe.go` sets them, and
+[When each output is published](#when-each-output-is-published) gives the
+detail.
+
+| Output | What it is | Example | When it appears |
+|---|---|---|---|
+| `privateEndpoint` | The address of the cluster's Kubernetes API, on the cluster's private network | `https://10.0.0.3:6443` | Once the cluster is ready |
+| `publicIpByLocation` | The public address of the ingress load balancer, the one that takes web traffic from the internet on ports 80 and 443, under its location | `{"fsn1":"203.0.113.10"}` | Once the cluster is ready |
+| `subscriptionId` | The id of your app's subscription to the block | `sub_0123456789ab` | Once the cluster is ready |
+| `clusterRepoUrl` | The web address of the cluster repository | `https://github.com/acme/shop-cluster` | Once the gateway and the repository exist, before the cluster is ready |
+| `enrolmentTokenSha256` | A fingerprint of the one-time token the cluster presents when it first signs up with mitstack, called enrolment. mitstack checks the presented token against it, so it needs the fingerprint before the cluster signs up | A base32 SHA-256 digest | Once the gateway and the repository exist, before the cluster is ready |
+| `repo` | The cluster repository's owner and name, recorded on the repository resource rather than the cluster | `acme/shop-cluster` | Once the repository exists with this subscription's mark, two GitHub topics the block sets on it |
+
+The cluster is ready once every resource exists and the newest node report
+names at least three nodes, every one Ready. The node report is a small
+workload inside the cluster that posts the nodes' state to mitstack every five
+minutes.
+
+## What the block needs
+
+The block reads three params: two you set, `appName` and `serverType`, and
+`hostsPlatform`, which you leave unset. It also needs two connections and no
+other block. Its manifest lists no `requires`, so no other block has to be in
+place first.
+
+`readParams` in `resource.go` reads the params. A subscribe with a param it
+cannot use is refused before anything is built, with the reason in the last
+column.
+
+| Param | Required | What it sets | Allowed values |
+|---|---|---|---|
+| `appName` | Yes | The name of the cluster repository, `<appName>-cluster` | Any name. An empty one is refused with `missing-param` |
+| `serverType` | No, `cx33` when empty | The Hetzner server type of each of the three nodes, and of the short-lived builder that makes the cluster's disk image | `cx23`, `cx33`, `cx43`, `cx53`, `cpx32`, `cpx52` or `cpx62`, as `allowedServerTypes` lists. Any other is refused with `invalid-param` |
+| `hostsPlatform` | No | Nothing you can use today: this release builds no cluster that hosts mitstack's own stores | Leave it unset. `true` is refused with `invalid-param` |
+
+Every type in that list is an x86 type, because the cluster's disk image is
+built for x86.
+
+The connections give the block its tokens. Subscribe needs both. Validate is
+the read-only check mitstack sends while a subscription is being built. The
+manifest's `verbConnections` names both connections for validate and
+unsubscribe, so mitstack sends their tokens on those requests as well.
+
+| Connection | What the block reads from it | What the block does with it | When it is missing |
+|---|---|---|---|
+| Hetzner | `api_token`, a Hetzner Cloud project's API token, read by `hetznerToken` in `resource.go` | Creates and deletes every server, load balancer, network, firewall and snapshot in that project, which Hetzner bills | Refused with `missing-hetzner-access` |
+| GitHub | `token`, `owner` and the GitHub API address mitstack sends with them, read by `dialGitHub` in `repository.go` | Creates, reads and deletes the cluster repository under `owner` | Refused with `missing-github-access` |
+
+## How it works
+
+The operator is a Go program built on the operator kit,
+`github.com/mitstack-eu/operator-kit/v3`. The operator kit is mitstack's Go
+library for blocks, and it checks each signed request and answers it. The
+nodes run Talos Linux, an operating system that runs only Kubernetes and is
 managed through an API, with no shell and no SSH. The Talos install comes from
 [talos-cluster-kit](https://github.com/mitstack-eu/talos-cluster-kit), a Go
-module of renders that both Hetzner cluster blocks import, apart from the
-operator kit the glossary calls the kit. The block's lifecycle handling comes
-from that operator kit, `github.com/mitstack-eu/operator-kit/v3`, and
+module of Talos settings and manifests that this block imports.
 [ADR 0095](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0095-mitstack-clusters-run-talos-across-fsn1-nbg1-and-hel1-with-a-load-balancer-per-location.md)
 records the design.
 
-The block is licensed under the Business Source License 1.1, with a grant
-that allows production use only for infrastructure the mitstack platform
-manages. [LICENSE](LICENSE) holds the full terms.
+mitstack gives each request two minutes, and a cluster takes up to 45 minutes
+to build. The operator therefore builds the cluster one step per request, and
+mitstack sends a fresh request until the cluster is ready. Every Hetzner
+resource carries the subscription id as a label, so each request finds the
+cluster by its labels alone and needs no memory of the last one.
+
+### When an app subscribes
+
+1. You subscribe your app to the block and fill in the params. mitstack sends
+   the operator a subscribe request with the params and both connections'
+   tokens.
+2. The operator checks the params and the tokens, and refuses with a named
+   reason when one is missing or wrong, as
+   [What the block needs](#what-the-block-needs) lists.
+3. The first requests create the private network and the cluster repository.
+   They then create a firewall with no rule, applied to every server so
+   nothing on the internet can reach one. Last come the two load balancers in
+   `fsn1`: the API one, which carries the Kubernetes API privately, and the
+   ingress one, which takes web traffic.
+   [What a subscribe builds](#what-a-subscribe-builds) describes each one.
+4. One request creates the gateway, the cluster's only server with a public
+   address, which carries the nodes' outbound traffic. It also creates a
+   short-lived builder server. Every node boots from the cluster's own disk
+   image, which holds the cluster's whole configuration, so no node needs
+   start-up data. The builder builds that image and powers itself off, and
+   the block saves its disk as a snapshot and deletes it.
+   [What a build reports while it runs and when it fails](#what-a-build-reports-while-it-runs-and-when-it-fails)
+   covers a slow or failed build.
+5. The next three requests create one node each, in `fsn1`, `nbg1` and `hel1`,
+   every one booted from the snapshot. The gateway then finds the first node,
+   checks that its Talos API presents a certificate signed by this cluster's
+   own certificate authority, and asks it through that API to start etcd.
+   [How a subscribe proceeds](#how-a-subscribe-proceeds) walks every step and
+   says which parts a live run has not yet shown.
+6. Between subscribe requests, mitstack checks the cluster with a validate
+   request. When a step has finished, the operator's answer asks mitstack to
+   send the next subscribe. While the builder or a node is still busy, mitstack
+   waits.
+7. Inside the cluster, a Kubernetes Job, a task that runs once, signs the
+   cluster up with mitstack. Argo CD starts applying the cluster repository,
+   and the node report starts posting.
+   [What runs inside the cluster](#what-runs-inside-the-cluster) lists every
+   component.
+8. Once the node report names three Ready nodes, the cluster reads ready and
+   mitstack records every output.
+
+In the code, `nextStep` in `resource.go` picks the one step a request takes,
+and `Ensure` takes it. `stepLeft` in `observe.go` uses the same `nextStep` to
+decide when validate asks for the next subscribe. An upgrade request, which
+moves a subscription to a newer release of the block, adds whatever is missing
+and never replaces a server.
+
+### When an app unsubscribes
+
+1. You remove the block from your app. mitstack sends the operator an
+   unsubscribe request with both connections' tokens.
+2. The operator deletes every server, then every load balancer, then the
+   snapshot, the firewall and the network, each found by the subscription's
+   labels. The snapshot goes too, because it holds every key of the cluster.
+3. It then deletes the cluster repository, when the repository carries this
+   subscription's mark, two GitHub topics. A repository without the mark stays
+   untouched.
+4. When the GitHub connection is unusable, the operator still deletes every
+   Hetzner resource, then refuses with `repository-left-in-place` and names the
+   repository it kept.
+5. mitstack counts the unsubscribe finished once every resource reads absent.
+
+`Delete` in `teardown.go` runs the unsubscribe.
+
+## What is in the repository
+
+Every new block starts from the same files, which mitstack's scaffold, its
+generator of new block repositories, writes. They come from the templates in
+the mitstack workspace's
+`platform/api/internal/scaffold/blockkitv1/`, plus `go.mod` and
+`.github/workflows/block-verify.yml`. This block has most of them, and adds its
+own files after.
+
+### Files every block starts with
+
+| File | What it holds in this block |
+|---|---|
+| `manifest.yaml` | What the block is, the resources it builds, the type it provides and the requests it answers |
+| `main.go` | Starts the operator's web service: `/hook` takes mitstack's requests, `/logs` serves the operator's recent log lines and `/healthz` answers a health check. It reads `MITSTACK_JWKS_URL`, the address where mitstack publishes its signing keys, to check each request |
+| `resource.go` | Reads the params and the Hetzner token, and takes each subscribe step |
+| `Dockerfile` | Builds the operator's container image |
+| `go.mod` | The Go module, and the versions of the modules it uses, among them the operator kit and talos-cluster-kit |
+| `go.sum` | The checksums of those modules |
+| `secrets_leak_test.go` | Proves that no token reaches an answer or the logs |
+| `teardown_test.go` | Proves that unsubscribe deletes every resource, the snapshot included |
+| `.github/` | `workflows/ci.yml`, which this block has in place of the scaffold's `block-verify.yml`. It runs the operator kit's publish workflow, which tests the block and publishes its image on a push to `main`, and runs gitleaks and shellcheck |
+
+The scaffold's `resource_test.go`, `verbsemantics_test.go` and
+`types/snapshot.json` are not in this repository. Its copy of the platform's
+type snapshot sits at `testdata/type-snapshot.json` instead.
+
+### Files this block adds
+
+| File | What it does |
+|---|---|
+| `README.md` | This guide |
+| `LICENSE` | The Business Source License 1.1, whose grant allows production use only for infrastructure the mitstack platform manages |
+| `hetzner.go` | The block's Hetzner Cloud client. It offers no rebuild, resize or user-data update, so no request can change a running server |
+| `identity.go` | The labels every Hetzner resource carries, by which each request finds the subscription's resources |
+| `state.go` | Reads every Hetzner resource with the subscription's labels and sorts them by role |
+| `install.go` | Mints the cluster's keys and creates the gateway and the builder in the same request |
+| `userdata.go` | The start-up data the builder and the gateway boot with |
+| `manifests.go` | Adds the block's own Kubernetes manifests to talos-cluster-kit's components, and names the tools image |
+| `manifests/` | Those manifests: the Argo CD Applications, the Job that signs the cluster up, and the token renewal |
+| `scripts/` | The shell scripts the servers run, to build the image, start the first node and fetch the cluster's tokens |
+| `repository.go` | Creates, reads and deletes the cluster repository on GitHub |
+| `observe.go` | The observers, which read each resource from Hetzner and GitHub and report it present, absent or not yet known. They also set the outputs and tell mitstack when to send the next subscribe |
+| `metrics.go` | Reads the builder's CPU and disk metrics from Hetzner, for the progress and failure messages |
+| `nodereports.go` | Reads the cluster's node reports from mitstack |
+| `teardown.go` | Runs the unsubscribe |
+| `harness_test.go` | The shared test fakes: Hetzner in memory, GitHub, the node reports, and an engine that plays mitstack |
+| `subscribe_test.go` | Proves what a subscribe builds, every refusal and the outputs |
+| `redrive_test.go` | Proves that one subscribe reaches three nodes through mitstack's repeated requests |
+| `userdata_test.go` | Proves the builder's and the gateway's start-up data |
+| `scripts_test.go` | Runs each script against fake commands |
+| `hetzner_adapter_test.go` | Proves the Hetzner client's requests, such as a node with no user data and no public address |
+| `manifest_test.go` | Proves the manifest's type, server types and description, and that every declared resource has an observer |
+| `declared_resources_test.go` | Runs the operator kit's block guards |
+| `testdata/` | `type-snapshot.json`, the platform's resource types the tests read, and `default-cluster.golden`, a default cluster's expected components |
 
 ## What a subscribe builds
 
@@ -292,7 +504,16 @@ A build against a kit whose `tools.Image` carries the `unreleased` placeholder
 tag refuses every subscribe.
 
 The cluster names no log receiver, so each node keeps its logs, and the gateway
-forwards no log port. The operator needs no setting from its host.
+forwards no log port.
+
+The operator reads its settings from the environment its host gives it, in
+`main.go` and `repository.go`:
+
+| Variable | Required | What it sets |
+|---|---|---|
+| `MITSTACK_JWKS_URL` | Yes. The operator exits at start when it is unset | The address where mitstack publishes its signing keys, which the operator checks each request against |
+| `LISTEN_ADDR` | No, `:8080` when unset | The address the operator's web service listens on |
+| `MITSTACK_GITHUB_API_HOSTS` | No | A comma-separated list of GitHub API hosts the operator accepts beside `api.github.com` |
 
 ## How you change the block
 
