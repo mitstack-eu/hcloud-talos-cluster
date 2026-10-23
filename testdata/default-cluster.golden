@@ -4,15 +4,20 @@ served cilium-policy-crd components/cilium/policy-crd.yaml 582273fd2b7d7238563ad
 served argocd components/argocd/argocd.yaml fb411045350cff6403ef713a067f92d7c88e0527e6ca9c8bd115886f8c4aa17b
 served kyverno components/kyverno/kyverno.yaml 7f93b0957f04a348f03d6c0cdff833dd6e1eb4b9becc8481ffc2ca5ab65b2902
 served cloudnative-pg components/cloudnative-pg/cloudnative-pg.yaml 6c62fe77193f3e9dbd1073cf81bc9271ab041f39097bf855417b8488d8eb8561
+served local-path-provisioner components/local-path-provisioner/local-path-provisioner.yaml b2dfa76fee341a7ff10719b32edd35a857ab34d467bcd31889d6193691c30d39
 inline mitstack-metadata-block components/metadata/metadata-block.yaml b7920f3958734e0a1b5ec2b83640825533e5ed30cb4e032311178d1026c05e10
 inline mitstack-require-app-label components/admission/policies/mitstack-require-app-label.yaml bbf06e6026738b8d2659fa5d281b474a5d35c2f76766756ed6b061bbe9dea920
 inline mitstack-generate-default-deny components/admission/policies/mitstack-generate-default-deny.yaml fb82344ae700e50bf8443d9f4d5fa9128e00944a48e04ea6bf5faca3ad66cb29
 inline cloudnative-pg-namespace components/cloudnative-pg/namespace.yaml 47a50db79b64cce126628a44be1e623b158619aa6ddef2154f31696be0c05880
 inline mitstack-database-slices components/network-policies/mitstack-database-slices.yaml 089740ecedd18569ac6d767fe60b7f9fe66527e9d59a0fdb5a327064f36656cd
+inline local-path-provisioner-namespace components/local-path-provisioner/namespace.yaml 329def3abe576c04ee7c24c12217c7666ffc6c236cc8027a104409f91d980a85
+inline mitstack-local-path-flows components/local-path-provisioner/flows.yaml 7421ec1b8ac51c817d0a961551e337261468dfff4d7f587367ccf4fb0ba97763
 inline mitstack-node-report report/report.yaml unrecorded
 inline mitstack-cluster-tokens manifests/cluster-tokens.yaml b55b254b45c02c7a2a3adc461ee803848dbef98b36746289946517a8046190b0
 inline mitstack-cluster-application manifests/cluster-application.yaml 92e6347d03420f2609f3238107104fd76828f5957855013641259c78928a2aa6
+mirror docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 mirror docker.io/otel/opentelemetry-collector-contrib:0.163.1@sha256:1175b03003053962012f5a231f5567f66a3e8fdb960c7835c0e48f7aa1555806
+mirror docker.io/rancher/local-path-provisioner:v0.0.37@sha256:e757967a5ec338f6a9b371c5a9688bedaa8c3578ea3dd4db329ea0084be0a86f
 mirror ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1@sha256:923c267ec29636db3bee20f993d0ec4973fa22998e1adad37da79e4d32b5bc07
 mirror ghcr.io/cloudnative-pg/pgbouncer:1.25.2@sha256:b15c428057d1ffbc19fb70496911a5f1a47066dcc1315bf794f4e85ade29e2e5
 mirror ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:f7e00138159bb45d70b624ba25e446924cb3ed1bf366d13e936c3f81b914064e
@@ -74,16 +79,20 @@ document RegistryMirrorConfig public.ecr.aws
 document RegistryMirrorConfig quay.io
 document RegistryMirrorConfig registry.k8s.io
 document RegistryTLSConfig 10.0.0.2
+document UserVolumeConfig local-path-provisioner
 document KubeExternalManifestConfig cilium
 document KubeExternalManifestConfig cilium-policy-crd
 document KubeExternalManifestConfig argocd
 document KubeExternalManifestConfig kyverno
 document KubeExternalManifestConfig cloudnative-pg
+document KubeExternalManifestConfig local-path-provisioner
 document KubeInlineManifestConfig mitstack-metadata-block
 document KubeInlineManifestConfig mitstack-require-app-label
 document KubeInlineManifestConfig mitstack-generate-default-deny
 document KubeInlineManifestConfig cloudnative-pg-namespace
 document KubeInlineManifestConfig mitstack-database-slices
+document KubeInlineManifestConfig local-path-provisioner-namespace
+document KubeInlineManifestConfig mitstack-local-path-flows
 document KubeInlineManifestConfig mitstack-node-report
 document KubeInlineManifestConfig mitstack-cluster-tokens
 document KubeInlineManifestConfig mitstack-cluster-application
