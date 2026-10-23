@@ -43,9 +43,10 @@ block. [Params, connections and outputs](docs/reference.md) has every table.
 
 ## Use it
 
-1. In the mitstack console's [Capabilities page](https://api.mitstack.dev/capabilities),
-   connect GitHub, and Hetzner with a Cloud project's read and write API token.
-2. Subscribe your app to this block, and fill in `appName`.
+1. In your Hetzner Cloud project, make a read and write API token under Security, API tokens.
+   Connect it and GitHub on the mitstack console's [Capabilities page](https://api.mitstack.dev/capabilities).
+2. Open this block on the console's [Blocks page](https://api.mitstack.dev/blocks), choose
+   **Add to an app**, pick your app, and fill in `appName`.
 3. Once the console shows the subscription ready, in up to 45 minutes, commit
    your Kubernetes manifests to the repo's `cluster/` folder.
 
@@ -60,8 +61,8 @@ gateway, the only server with a public address, starts etcd, the cluster's
 database. The cluster then signs up with mitstack once to get its tokens.
 
 ```mermaid
-%%{init: {"themeVariables": {"fontSize": "18px"}, "sequence": {"messageFontSize": 18, "actorFontSize": 18, "noteFontSize": 16, "actorMargin": 40, "width": 130, "mirrorActors": false}}}%%
 sequenceDiagram
+    %%{init: {"fontSize": 22, "sequence": {"actorMargin": 20, "width": 100, "mirrorActors": false}}}%%
     actor You
     participant M as mitstack
     participant O as Operator
