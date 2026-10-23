@@ -27,11 +27,18 @@ inside the configuration itself.
 | `mitstack-generate-default-deny` | Gives every namespace outside the system list a `mitstack-default-deny` network policy | Inline |
 | CloudNativePG | The Postgres operator, in `cnpg-system` | Served, its namespace inline |
 | `mitstack-database-slices` | Lets a database slice's Postgres instances reach the API server and each other, and admits the operator on port 8000 and every slice on port 5432 | Inline |
+| The local path provisioner | Gives each storage claim that names no class a directory on its node's own disk, through the default StorageClass `local-path` | Served, its namespace and network policy inline |
 | The node report, the enrolment Job and the token renewal | The block's own workloads, in `mitstack-node` | Inline |
 
 Both policies exempt `mitstack-node`, so the block's own pods need no app
 label and keep their route to the platform. Every image these components pull
 is listed by digest in the gateway's mirror.
+
+A storage claim, a PersistentVolumeClaim, that names no class gets `local-path`. Its size caps nothing, and its
+data is lost with its node's server, so a workload that must outlive a node
+keeps copies on other nodes itself.
+[talos-cluster-kit's README](https://github.com/mitstack-eu/talos-cluster-kit/blob/v0.9.0/README.md#where-a-claim-keeps-its-data)
+gives the details.
 
 The node report also lists CloudNativePG's clusters, databases and roles in a
 read of its own, which fails apart from the nodes and Applications it reads.
@@ -57,7 +64,7 @@ only a new subscribe gets a newer kit's components.
 The node report, the enrolment Job and the token renewal run in the
 talos-cluster-kit tools image, which the kit's own release publishes and signs.
 The block takes it from `tools.Image` in the kit release `go.mod` requires,
-such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.7.0@sha256:2fdfcf40…`.
+such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.9.0@sha256:f61b51e2…`.
 A build against a kit whose `tools.Image` carries the `unreleased` placeholder
 tag refuses every subscribe.
 
