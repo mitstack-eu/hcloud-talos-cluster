@@ -615,7 +615,7 @@ func TestSubscribe_TheClusterOutputsTheIssuerItsNodesSignTokensForInAnIssuerBuck
 		"the issuer every node signs service-account tokens for")
 }
 
-func TestObserve_APresentClusterWhoseGatewayCarriesNoIssuerBucketOutputsNoIssuer(t *testing.T) {
+func TestObserve_AClusterWhoseGatewayCarriesNoIssuerBucketReadsUnknownAndSaysWhy(t *testing.T) {
 	e := newEnv(t)
 	require.Equal(t, contract.Present, e.subscribe().State, "the subscribe")
 	gateway := e.hetzner.byRole(t, roleGateway)[0]
@@ -623,8 +623,8 @@ func TestObserve_APresentClusterWhoseGatewayCarriesNoIssuerBucketOutputsNoIssuer
 
 	obs := e.observe()
 
-	require.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
-	assert.NotContains(t, obs.Outputs, "issuerBucket", "the outputs of a cluster whose gateway names no issuer bucket")
+	assert.Equal(t, contract.Unknown, obs.State, "detail: %s", obs.StatusDetail)
+	assert.Contains(t, obs.StatusDetail, "no "+keyIssuerBucket+" label")
 	assert.NotContains(t, obs.Outputs, "issuerUrl", "the outputs of a cluster whose gateway names no issuer bucket")
 }
 
