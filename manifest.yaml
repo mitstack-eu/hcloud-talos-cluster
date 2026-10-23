@@ -22,11 +22,15 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.4.1
-  releaseClass: correctness-fix
+  version: 0.5.0
+  releaseClass: feature
   releaseNote: >-
-    The block's description fits the platform's limit of 240 characters, so
-    the platform accepts this release's manifest.
+    The block takes talos-cluster-kit v0.7.0, so a new cluster's node report
+    carries the checks member the platform's verdict reads, declaring the
+    node-report/v1 contract and naming no check. The release is 0.5.0, a
+    feature and so a minor raise, as 0.3.0 was for kit v0.5.0, because the
+    report gains a member the platform reads. A cluster that does not host
+    the platform renders as before, and hostsPlatform=true is still refused.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, one
     control-plane node in each of fsn1, nbg1 and hel1 behind load balancers
