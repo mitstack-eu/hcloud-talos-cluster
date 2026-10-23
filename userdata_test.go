@@ -526,6 +526,22 @@ func TestBuilder_TheNodeReportNamesEachKindItReadWholeAndMayReadNoSecret(t *test
 	}
 }
 
+func TestBuilder_EveryNodeEncryptsStateAndEphemeralUnderItsNodeIDKeyAndTheReportNamesIt(t *testing.T) {
+	e := subscribedOnce(t)
+	volumes := map[string]any{}
+	for _, doc := range testutil.Kind(builderConfiguration(t, e), "VolumeConfig") {
+		volumes[doc["name"].(string)] = doc["encryption"]
+	}
+
+	posted := runNodeReport(t, nodeReportScript(t))
+
+	assert.Equal(t, map[string]any{
+		"STATE":     map[string]any{"provider": "luks2", "keys": []any{map[string]any{"slot": 0, "nodeID": map[string]any{}}}},
+		"EPHEMERAL": map[string]any{"provider": "luks2", "keys": []any{map[string]any{"slot": 0, "nodeID": map[string]any{}, "lockToState": true}}},
+	}, volumes, "the encryption of each system volume in the image's configuration")
+	assert.Contains(t, posted, "systemVolumes", "the node report names each node's volume encryption")
+}
+
 // nodeReportScript returns the script the builder's node report CronJob runs.
 func nodeReportScript(t *testing.T) string {
 	t.Helper()
