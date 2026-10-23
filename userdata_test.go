@@ -390,6 +390,31 @@ func TestCluster_KeepsEachClaimOnItsNodesUserVolumeThroughTheLocalPathProvisione
 	assert.Subset(t, mirrored, []string{"docker.io/rancher/local-path-provisioner", "docker.io/library/busybox"}, "the provisioner's and its helper's images")
 }
 
+func TestCluster_PutsEveryPodInIstiosAmbientMeshAndRefusesACallWithoutAWorkloadIdentity(t *testing.T) {
+	e := subscribedOnce(t)
+	release, err := kitRelease()
+	require.NoError(t, err)
+
+	manifests := inlineManifests(t, builderConfiguration(t, e))
+	kit := decodeCloudConfig(t, gatewayParts(t, e.hetzner.userData[e.hetzner.byRole(t, roleGateway)[0].ID])[0])
+
+	fetched := strings.Fields(kit.file(t, "/etc/mitstack-gateway/manifests.txt").Content)
+	for _, file := range []string{"istio-base", "istiod", "istio-cni", "ztunnel"} {
+		assert.Contains(t, fetched, gateway.ReleaseURL(release)+"/components/istio/"+file+".yaml", "where the gateway fetches %s", file)
+	}
+	var mirrored []string
+	for _, ref := range strings.Fields(kit.file(t, "/etc/mitstack-gateway/images.txt").Content) {
+		image, err := components.ParseImage(ref)
+		require.NoError(t, err, "the mirror's image list")
+		mirrored = append(mirrored, image.Name)
+	}
+	assert.Subset(t, mirrored, []string{"docker.io/istio/pilot", "docker.io/istio/install-cni", "docker.io/istio/ztunnel"}, "Istio's images")
+	strict := testutil.Kind(manifests["mitstack-strict-mtls"], "PeerAuthentication")
+	require.Len(t, strict, 1, "the mesh-wide policy")
+	assert.Equal(t, "STRICT", testutil.Field(t, strict[0], "spec", "mtls", "mode"))
+	assert.Len(t, testutil.Kind(manifests["mitstack-require-mesh"], "ValidatingPolicy"), 1, "the policy that refuses a pod outside the mesh")
+}
+
 func adminCertificate(t *testing.T, talosconfig string) *x509.Certificate {
 	t.Helper()
 	var cfg struct {
