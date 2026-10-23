@@ -616,6 +616,19 @@ func TestSubscribe_TheClusterOutputsTheIssuerItsNodesSignTokensForInAnIssuerBuck
 		"the issuer every node signs service-account tokens for")
 }
 
+func TestObserve_APresentClusterWhoseGatewayCarriesNoIssuerBucketOutputsNoIssuer(t *testing.T) {
+	e := newEnv(t)
+	require.Equal(t, contract.Present, e.subscribe().State, "the subscribe")
+	gateway := e.hetzner.byRole(t, roleGateway)[0]
+	delete(e.hetzner.servers[gateway.ID].Labels, keyIssuerBucket)
+
+	obs := e.observe()
+
+	require.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
+	assert.NotContains(t, obs.Outputs, "issuerBucket", "the outputs of a cluster whose gateway names no issuer bucket")
+	assert.NotContains(t, obs.Outputs, "issuerUrl", "the outputs of a cluster whose gateway names no issuer bucket")
+}
+
 func TestObserve_AWaitingClusterWhoseRepositoryCannotBeNamedCarriesNeitherOutputAndSaysWhy(t *testing.T) {
 	e := newEnv(t)
 	require.NoError(t, e.converge())
