@@ -60,8 +60,8 @@ traffic and starts etcd, the cluster's state store. The cluster then enrols:
 it signs up with mitstack once and receives its tokens.
 
 ```mermaid
-%%{init: {"sequence": {"actorMargin": 30, "width": 120}}}%%
 sequenceDiagram
+    %%{init: {"sequence": {"actorMargin": 30, "width": 120}}}%%
     actor You
     participant M as mitstack
     participant O as Operator
