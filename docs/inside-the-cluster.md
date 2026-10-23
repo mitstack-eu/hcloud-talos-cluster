@@ -42,6 +42,12 @@ gives the details.
 
 The node report also lists CloudNativePG's clusters, databases and roles in a
 read of its own, which fails apart from the nodes and Applications it reads.
+Each read runs under a time limit. When any other read, or the build of the
+report itself, fails or times out, the cluster posts a report holding only an
+`error` that names the read, its exit status or that it timed out, and the end
+of its error output with no token in it. That report reaches mitstack's
+node-reports API, so a cluster that cannot report says why instead of going
+silent, and it names no nodes, so the cluster does not read as ready.
 Each report carries a `checks` member,
 `{"contract": "node-report/v1", "names": []}`, which names the contract the
 report follows and none of the platform verdict's checks, because none of its
