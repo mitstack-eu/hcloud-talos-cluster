@@ -51,9 +51,8 @@ block. [Params, connections and outputs](docs/reference.md) has every table.
 
 ## How it works
 
-mitstack gives each request two minutes, and a cluster takes up to 45 minutes
-to build. So the operator, the program in this repository, takes one step per
-request, and mitstack keeps sending requests until the cluster is ready.
+mitstack gives each request two minutes, and a build takes up to 45. So the
+operator, the program in this repository, takes one step per request.
 
 A short-lived builder server makes the disk image every node boots from. The
 gateway, the only server with a public address, carries the nodes' outbound
