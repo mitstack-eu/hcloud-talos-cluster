@@ -5,7 +5,8 @@ Your app's own Kubernetes cluster on Hetzner Cloud, spread over three cities.
 The cluster runs Talos Linux, an operating system made only for Kubernetes,
 on one node each in Falkenstein, Nuremberg and Helsinki. Argo CD, a tool
 inside the cluster, applies what you commit to a GitHub repo the block makes.
-Words like block and connection are in [the glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md).
+mitstack is a platform that runs ready-made services, called blocks, for your
+apps. [The glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md) defines its other words.
 
 ```mermaid
 flowchart LR
@@ -33,7 +34,7 @@ flowchart LR
 |---|---|
 | `appName`, your app's name | A three-node Kubernetes cluster for your app alone |
 | `serverType`, the node size, `cx33` by default | `privateEndpoint`, the cluster's private API address |
-| A Hetzner Cloud connection, for its API token | `publicIpByLocation`, the public IP for web traffic |
+| A Hetzner Cloud connection, for its API token | `publicIpByLocation`, the web traffic IP, under `fsn1` |
 | A GitHub connection, for its token and owner | `clusterRepoUrl`, the private `<appName>-cluster` repo |
 
 The block provides the type `hetzner.kubernetes-cluster` and needs no other
@@ -41,10 +42,10 @@ block. [Params, connections and outputs](docs/reference.md) has every table.
 
 ## Use it
 
-1. Link a Hetzner Cloud project and a GitHub account to your app in mitstack.
+1. On the mitstack console's Capabilities page, connect Hetzner with a Hetzner
+   Cloud project's read and write API token, and connect GitHub.
 2. Subscribe your app to this block, and fill in `appName`.
-3. Wait up to 45 minutes, until mitstack shows the cluster ready. Then commit
-   your Kubernetes manifests to the repo's `cluster/` folder.
+3. Once the cluster is ready, in up to 45 minutes, commit to the repo's `cluster/`.
 
 ## How it works
 
@@ -62,7 +63,7 @@ sequenceDiagram
     actor You
     participant M as mitstack
     participant O as Operator
-    participant H as Hetzner
+    participant H as Hetzner servers
     participant G as GitHub
     participant C as Cluster
     You->>M: Subscribe your app
