@@ -86,6 +86,7 @@ overwrite_disk() {
   exec > /dev/null 2>&1
   "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/zstd" -dc "$image" |
     "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/dd" of="$disk" bs=4M oflag=direct conv=fsync status=none
+  "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/sleep" 1
   printf o > "$proc/sysrq-trigger"
 }
 
@@ -99,7 +100,7 @@ write_disk() {
   cp "${images[0]}" "$work/image.raw.zst"
   rm -rf "$out"
   mkdir -p "$staged"
-  for program in bash zstd dd; do
+  for program in bash zstd dd sleep; do
     stage "$program"
   done
   printf '%s\n' "set -euo pipefail" "$(declare -f overwrite_disk)" "overwrite_disk \"\$@\"" > "$staged/overwrite-disk"
