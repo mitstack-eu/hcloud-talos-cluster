@@ -5,6 +5,7 @@
 # filesystem first and runs the overwrite from copies in a tmpfs, so once the
 # image starts landing, nothing it runs writes to or runs from that disk. A
 # failure in that overwrite ends it before the power-off.
+# It waits a second before the power-off: an unproven guard against cpx32 builders staying on.
 # Usage: build-image.sh <imager image by digest> <machine configuration> <network router>
 #   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
 #   BUILD_RESOLV_CONF and BUILD_PROC default to /mnt/mitstack-build,
@@ -86,6 +87,7 @@ overwrite_disk() {
   exec > /dev/null 2>&1
   "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/zstd" -dc "$image" |
     "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/dd" of="$disk" bs=4M oflag=direct conv=fsync status=none
+  "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/sleep" 1
   printf o > "$proc/sysrq-trigger"
 }
 
@@ -99,7 +101,7 @@ write_disk() {
   cp "${images[0]}" "$work/image.raw.zst"
   rm -rf "$out"
   mkdir -p "$staged"
-  for program in bash zstd dd; do
+  for program in bash zstd dd sleep; do
     stage "$program"
   done
   printf '%s\n' "set -euo pipefail" "$(declare -f overwrite_disk)" "overwrite_disk \"\$@\"" > "$staged/overwrite-disk"
