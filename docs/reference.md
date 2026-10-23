@@ -17,7 +17,7 @@ Each word is defined in full in
 | Subscribe | What an app does to start using a block. Unsubscribe is how it stops |
 | Operator | The program in this repository, which runs as a web service. mitstack sends it a request, signed with mitstack's own key, each time an app subscribes to the block, checks on it or unsubscribes |
 | Param | A setting you fill in when your app subscribes, such as the app's name |
-| Connection | An account you have linked to your app in mitstack, such as a Hetzner Cloud project or a GitHub account. mitstack passes the account's token to the block with each request, and the block acts for you with it |
+| Connection | An account your org has connected in mitstack, on the console's Capabilities page, such as a Hetzner Cloud project or a GitHub account. It belongs to the org, not to one app. mitstack passes the account's token to the block with each request, and the block acts for you with it |
 | Resource | One thing the block creates and tracks, such as a server, a load balancer or the cluster repository |
 | Output | A value the block hands back once it has built something, such as the cluster's address, which mitstack records for the app |
 | Manifest | The file `manifest.yaml`, which tells mitstack what the block is, what it builds and which requests it answers |

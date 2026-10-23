@@ -51,39 +51,38 @@ block. [Params, connections and outputs](docs/reference.md) has every table.
 
 ## How it works
 
-mitstack gives each request two minutes, and a build takes up to 45. So the
-operator, the program in this repository, takes one step per request.
+A cluster takes up to 45 minutes to build, but mitstack waits only two minutes
+for each answer. So the operator, the program in this repository, does one
+small step each time mitstack asks, and mitstack keeps asking until it is done.
 
-A short-lived builder server makes the disk image every node boots from. The
-gateway, the only server with a public address, carries the nodes' outbound
-traffic and starts etcd, the cluster's state store. The cluster then enrols:
-it signs up with mitstack once and receives its tokens.
+A short-lived builder server makes the disk image every node starts from. The
+gateway, the only server with a public address, starts etcd, the cluster's
+database. The cluster then signs up with mitstack once to get its tokens.
 
 ```mermaid
+%%{init: {"themeVariables": {"fontSize": "18px"}, "sequence": {"messageFontSize": 18, "actorFontSize": 18, "noteFontSize": 16, "actorMargin": 40, "width": 130, "mirrorActors": false}}}%%
 sequenceDiagram
-    %%{init: {"sequence": {"actorMargin": 30, "width": 120}}}%%
     actor You
     participant M as mitstack
     participant O as Operator
-    participant H as Hetzner servers
-    participant G as GitHub
+    participant H as Hetzner
     participant C as Cluster
     You->>M: Subscribe your app
-    M->>O: subscribe, once per step
-    O->>H: Create network
-    O->>G: Create cluster repo
-    O->>H: Firewall, load balancers
-    O->>H: Gateway and builder
-    H-->>O: Image built, builder off
-    O->>H: Snapshot, delete builder
-    O->>H: Node in fsn1, nbg1, hel1
-    H->>C: Gateway starts etcd
-    C->>M: Enrol, receive tokens
-    C->>G: Argo CD reads repo
-    C->>M: Node report, every 5 min
-    M->>O: validate, regular check
-    O-->>M: Ready, with outputs
-    M-->>You: Cluster ready
+    rect rgba(80, 140, 255, 0.12)
+        Note over M,H: 1. Build the image, one step per request
+        M->>O: Take the next step
+        O->>H: Network, firewall,<br/>load balancers
+        Note over O: Also makes your<br/>GitHub repo
+        O->>H: Builder makes<br/>the disk image
+    end
+    rect rgba(60, 190, 110, 0.12)
+        Note over O,C: 2. Boot the nodes
+        O->>H: Three nodes start<br/>from the image
+        H->>C: Gateway starts etcd
+    end
+    C->>M: Sign up, get tokens
+    C->>M: Report the nodes,<br/>every five minutes
+    M-->>You: Your cluster is ready
 ```
 
 When you unsubscribe, the operator deletes every Hetzner resource it made, and
