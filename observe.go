@@ -330,7 +330,7 @@ func (st clusterState) gatewayProblems(network hcNetwork, firewall hcFirewall) [
 		missing = append(missing, fmt.Sprintf("firewall %d is not applied to gateway %d", firewall.ID, gw.ID))
 	}
 	if gw.Labels[keyIssuerBucket] == "" {
-		missing = append(missing, fmt.Sprintf("gateway %d has no %s label, so the cluster names no issuer its nodes sign for", gw.ID, keyIssuerBucket))
+		missing = append(missing, fmt.Sprintf("gateway %d has no %s label, so the block cannot read the issuer its nodes sign for", gw.ID, keyIssuerBucket))
 	}
 	return missing
 }
