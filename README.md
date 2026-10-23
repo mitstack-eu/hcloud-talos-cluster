@@ -62,28 +62,28 @@ database. The cluster then signs up with mitstack once to get its tokens.
 
 ```mermaid
 sequenceDiagram
-    %%{init: {"fontSize": 22, "sequence": {"actorMargin": 20, "width": 100, "mirrorActors": false}}}%%
+    %%{init: {"fontSize": 22, "sequence": {"actorMargin": 10, "width": 90, "mirrorActors": false}}}%%
     actor You
     participant M as mitstack
     participant O as Operator
     participant H as Hetzner
     participant C as Cluster
-    You->>M: Subscribe your app
+    You->>M: Subscribe
     rect rgba(80, 140, 255, 0.12)
-        Note over M,H: 1. Build the image, one step per request
-        M->>O: Take the next step
-        O->>H: Network, firewall,<br/>load balancers
-        Note over O: Also makes your<br/>GitHub repo
-        O->>H: Builder makes<br/>the disk image
+        Note over M,H: 1. Build the image
+        M->>O: Next step,<br/>each request
+        O->>H: Network, load<br/>balancers
+        Note over O: And your<br/>GitHub repo
+        O->>H: Builder makes<br/>the image
     end
     rect rgba(60, 190, 110, 0.12)
         Note over O,C: 2. Boot the nodes
-        O->>H: Three nodes start<br/>from the image
-        H->>C: Gateway starts etcd
+        O->>H: Three nodes<br/>start from it
+        H->>C: Gateway<br/>starts etcd
     end
     C->>M: Sign up, get tokens
-    C->>M: Report the nodes,<br/>every five minutes
-    M-->>You: Your cluster is ready
+    C->>M: Report nodes<br/>every 5 minutes
+    M-->>You: Cluster ready
 ```
 
 When you unsubscribe, the operator deletes every Hetzner resource it made, and
