@@ -15,9 +15,10 @@ A few mitstack words recur below. Each is defined in full in
 | Block | A ready-made service that mitstack runs for you, such as a database or, here, a Kubernetes cluster |
 | App | Your project in mitstack, which uses one or more blocks |
 | Subscribe | What an app does to start using a block. Unsubscribe is how it stops |
-| Operator | The program in this repository. mitstack sends it a signed request each time an app subscribes to the block, checks on it or unsubscribes |
+| Operator | The program in this repository, which runs as a web service. mitstack sends it a request, signed with mitstack's own key, each time an app subscribes to the block, checks on it or unsubscribes |
 | Param | A setting you fill in when your app subscribes, such as the app's name |
-| Connection | An account you have linked to your app in mitstack, such as a Hetzner Cloud project or a GitHub account. The block acts for you with its token |
+| Connection | An account you have linked to your app in mitstack, such as a Hetzner Cloud project or a GitHub account. mitstack passes the account's token to the block with each request, and the block acts for you with it |
+| Resource | One thing the block creates and tracks, such as a server, a load balancer or the cluster repository |
 | Output | A value the block hands back once it has built something, such as the cluster's address, which mitstack records for the app |
 | Manifest | The file `manifest.yaml`, which tells mitstack what the block is, what it builds and which requests it answers |
 
@@ -29,9 +30,11 @@ several servers. The cluster has three servers, called nodes, one in each of
 Hetzner's three European locations: `fsn1` in Falkenstein, `nbg1` in Nuremberg
 and `hel1` in Helsinki.
 
-The cluster is designed to keep its state while any two of its three nodes are
-up. Its gateway and both of its load balancers sit in `fsn1`, so losing `fsn1`
-stops the cluster's outbound and web traffic.
+The cluster's state store, etcd, is designed to keep working while any two of
+the three nodes are up. All outbound traffic leaves through one server, the
+gateway. Two load balancers, which spread incoming traffic across the nodes,
+sit beside it in `fsn1`. Losing `fsn1` therefore stops the cluster's outbound
+and web traffic.
 
 The block also creates a private GitHub repository for the cluster, named
 `<appName>-cluster`. Argo CD, a tool that runs inside the cluster, applies what
@@ -39,7 +42,7 @@ that repository holds to the cluster. A commit to the repository's `cluster/`
 folder therefore changes what runs on the cluster.
 
 In mitstack's terms, the block provides the type `hetzner.kubernetes-cluster`,
-which `provides` in `manifest.yaml` declares. A type is the catalogue name of
+which the `provides` list in `manifest.yaml` declares. A type is the catalogue name of
 one kind of resource. mitstack matches a block that requires a type with a
 block that provides it.
 
@@ -50,11 +53,11 @@ detail.
 | Output | What it is | Example | When it appears |
 |---|---|---|---|
 | `privateEndpoint` | The address of the cluster's Kubernetes API, on the cluster's private network | `https://10.0.0.3:6443` | Once the cluster is ready |
-| `publicIpByLocation` | The public address of the ingress load balancer, which takes your web traffic on ports 80 and 443, under its location | `{"fsn1":"203.0.113.10"}` | Once the cluster is ready |
+| `publicIpByLocation` | The public address of the ingress load balancer, the one that takes web traffic from the internet on ports 80 and 443, under its location | `{"fsn1":"203.0.113.10"}` | Once the cluster is ready |
 | `subscriptionId` | The id of your app's subscription to the block | `sub_0123456789ab` | Once the cluster is ready |
 | `clusterRepoUrl` | The web address of the cluster repository | `https://github.com/acme/shop-cluster` | Once the gateway and the repository exist, before the cluster is ready |
-| `enrolmentTokenSha256` | A fingerprint of the one-time token the cluster uses to sign up with mitstack, which mitstack checks the token against | A base32 SHA-256 digest | Once the gateway and the repository exist, before the cluster is ready |
-| `repo` | The cluster repository's owner and name, recorded on the repository resource rather than the cluster | `acme/shop-cluster` | Once the repository exists with this subscription's mark |
+| `enrolmentTokenSha256` | A fingerprint of the one-time token the cluster presents when it first signs up with mitstack, called enrolment. mitstack checks the presented token against it, so it needs the fingerprint before the cluster signs up | A base32 SHA-256 digest | Once the gateway and the repository exist, before the cluster is ready |
+| `repo` | The cluster repository's owner and name, recorded on the repository resource rather than the cluster | `acme/shop-cluster` | Once the repository exists with this subscription's mark, two GitHub topics the block sets on it |
 
 The cluster is ready once every resource exists and the newest node report
 names at least three nodes, every one Ready. The node report is a small
@@ -79,9 +82,10 @@ column.
 Every type in that list is an x86 type, because the cluster's disk image is
 built for x86.
 
-The connections give the block its tokens. Subscribe needs both. The
-manifest's `verbConnections` names both for validate and unsubscribe, so
-mitstack sends their tokens on those requests as well.
+The connections give the block its tokens. Subscribe needs both. Validate is
+the read-only check mitstack sends while a subscription is being built. The
+manifest's `verbConnections` names both connections for validate and
+unsubscribe, so mitstack sends their tokens on those requests as well.
 
 | Connection | What the block reads from it | What the block does with it | When it is missing |
 |---|---|---|---|
@@ -91,12 +95,12 @@ mitstack sends their tokens on those requests as well.
 ## How it works
 
 The operator is a Go program built on the operator kit,
-`github.com/mitstack-eu/operator-kit/v3`, which checks mitstack's signed
-requests and answers them. The nodes run Talos Linux, an operating system
-that runs only Kubernetes and is managed through an API, with no shell and no
-SSH. The Talos install comes from
+`github.com/mitstack-eu/operator-kit/v3`. The operator kit is mitstack's Go
+library for blocks, and it checks each signed request and answers it. The
+nodes run Talos Linux, an operating system that runs only Kubernetes and is
+managed through an API, with no shell and no SSH. The Talos install comes from
 [talos-cluster-kit](https://github.com/mitstack-eu/talos-cluster-kit), a Go
-module that both Hetzner cluster blocks import.
+module of Talos settings and manifests that this block imports.
 [ADR 0095](https://github.com/mitstack-eu/mitstack/blob/main/docs/adr/0095-mitstack-clusters-run-talos-across-fsn1-nbg1-and-hel1-with-a-load-balancer-per-location.md)
 records the design.
 
@@ -114,33 +118,40 @@ cluster by its labels alone and needs no memory of the last one.
 2. The operator checks the params and the tokens, and refuses with a named
    reason when one is missing or wrong, as
    [What the block needs](#what-the-block-needs) lists.
-3. The first requests create the private network, the cluster repository, a
-   firewall with no rule, and the API and ingress load balancers in `fsn1`.
+3. The first requests create the private network and the cluster repository.
+   They then create a firewall with no rule, applied to every server so
+   nothing on the internet can reach one. Last come the two load balancers in
+   `fsn1`: the API one, which carries the Kubernetes API privately, and the
+   ingress one, which takes web traffic.
    [What a subscribe builds](#what-a-subscribe-builds) describes each one.
 4. One request creates the gateway, the cluster's only server with a public
    address, which carries the nodes' outbound traffic. It also creates a
-   short-lived builder server. The builder builds the cluster's disk image and
-   powers itself off, and the block saves its disk as a snapshot and deletes
-   it. [What a build reports while it runs and when it fails](#what-a-build-reports-while-it-runs-and-when-it-fails)
+   short-lived builder server. Every node boots from the cluster's own disk
+   image, which holds the cluster's whole configuration, so no node needs
+   start-up data. The builder builds that image and powers itself off, and
+   the block saves its disk as a snapshot and deletes it.
+   [What a build reports while it runs and when it fails](#what-a-build-reports-while-it-runs-and-when-it-fails)
    covers a slow or failed build.
 5. The next three requests create one node each, in `fsn1`, `nbg1` and `hel1`,
-   every one booted from the snapshot. The gateway then starts the cluster on
-   the first node it finds.
+   every one booted from the snapshot. The gateway then checks that the first
+   node it finds belongs to this cluster, and starts etcd on it.
    [How a subscribe proceeds](#how-a-subscribe-proceeds) walks every step and
    says which parts a live run has not yet shown.
 6. Between subscribe requests, mitstack checks the cluster with a validate
    request. When a step has finished, the operator's answer asks mitstack to
    send the next subscribe. While the builder or a node is still busy, mitstack
    waits.
-7. Inside the cluster, a Job signs the cluster up with mitstack once, Argo CD
-   starts applying the cluster repository, and the node report starts posting.
+7. Inside the cluster, a Kubernetes Job, a task that runs once, signs the
+   cluster up with mitstack. Argo CD starts applying the cluster repository,
+   and the node report starts posting.
    [What runs inside the cluster](#what-runs-inside-the-cluster) lists every
    component.
 8. Once the node report names three Ready nodes, the cluster reads ready and
    mitstack records every output.
 
-`Ensure` and `nextStep` in `resource.go` take each step, and `stepLeft` in
-`observe.go` decides when validate asks for the next subscribe. An upgrade adds
+In the code, `nextStep` in `resource.go` picks the one step a request takes,
+and `Ensure` takes it. `stepLeft` in `observe.go` uses the same `nextStep` to
+decide when validate asks for the next subscribe. An upgrade adds
 whatever is missing and never replaces a server.
 
 ### When an app unsubscribes
