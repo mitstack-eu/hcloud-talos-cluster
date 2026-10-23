@@ -61,6 +61,7 @@ traffic and starts etcd, the cluster's state store. The cluster then enrols:
 it signs up with mitstack once and receives its tokens.
 
 ```mermaid
+%%{init: {"sequence": {"actorMargin": 30, "width": 120}}}%%
 sequenceDiagram
     actor You
     participant M as mitstack
@@ -69,21 +70,21 @@ sequenceDiagram
     participant G as GitHub
     participant C as Cluster
     You->>M: Subscribe your app
-    M->>O: subscribe, then again for each step
-    O->>H: Create the network
-    O->>G: Create the cluster repo
-    O->>H: Create firewall and load balancers
-    O->>H: Create gateway and builder
-    H-->>O: Builder wrote the image and is off
-    O->>H: Snapshot its disk, delete the builder
-    O->>H: Create a node in fsn1, nbg1, hel1
-    H->>C: Gateway server starts etcd on a node
-    C->>M: Enrol once, receive tokens
-    C->>G: Argo CD reads the repo
-    C->>M: Node report every 5 minutes
-    M->>O: validate, the regular check
-    O-->>M: Ready, with the outputs
-    M-->>You: Your cluster is ready
+    M->>O: subscribe, once per step
+    O->>H: Create network
+    O->>G: Create cluster repo
+    O->>H: Firewall, load balancers
+    O->>H: Gateway and builder
+    H-->>O: Image built, builder off
+    O->>H: Snapshot, delete builder
+    O->>H: Node in fsn1, nbg1, hel1
+    H->>C: Gateway starts etcd
+    C->>M: Enrol, receive tokens
+    C->>G: Argo CD reads repo
+    C->>M: Node report, every 5 min
+    M->>O: validate, regular check
+    O-->>M: Ready, with outputs
+    M-->>You: Cluster ready
 ```
 
 When you unsubscribe, the operator deletes every Hetzner resource it made, and
