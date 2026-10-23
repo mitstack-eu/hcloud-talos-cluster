@@ -37,10 +37,10 @@ type installInputs struct {
 	now        time.Time
 }
 
-// installation is what one install renders: the two servers' user data and the enrolment token's digest.
+// installation is what one install renders: both servers' user data, the enrolment digest and the issuer bucket.
 type installation struct {
 	gatewayUserData, builderUserData string
-	enrolmentDigest                  string
+	enrolmentDigest, issuerBucket    string
 }
 
 // install creates both servers stopped and off the network, since Hetzner gives a server joining with no address the
@@ -60,6 +60,7 @@ func install(ctx context.Context, c convergence, site clusterSite) error {
 	}
 	gatewayLabels := ownerLabels(c.req.subID, roleGateway)
 	gatewayLabels[keyEnrolmentSHA256] = inst.enrolmentDigest
+	gatewayLabels[keyIssuerBucket] = inst.issuerBucket
 	_, err = c.api.CreateServers(ctx, serverSpec{
 		Name:        resourceName(c.req.params.appName, c.req.subID, roleGateway),
 		ServerType:  gatewayType,
@@ -129,7 +130,7 @@ func readInstallInputs(req ensureRequest, site clusterSite, now time.Time) (inst
 	return installInputs{subID: req.subID, appName: req.params.appName, repo: req.gh.repo, apiAddress: addr, now: now}, nil
 }
 
-// renderInstallation mints the cluster's keys, the gateway's CA and the enrolment token, and renders both servers' user data.
+// renderInstallation mints the cluster's keys, gateway CA, enrolment token and issuer bucket, and renders both user data.
 func renderInstallation(in installInputs) (installation, error) {
 	secrets, err := nodeconfig.NewSecrets(in.now)
 	if err != nil {
@@ -143,21 +144,26 @@ func renderInstallation(in installInputs) (installation, error) {
 	if err != nil {
 		return installation{}, err
 	}
+	bucket, err := mintIssuerBucket()
+	if err != nil {
+		return installation{}, err
+	}
 	set, err := clusterComponents(manifestInputs{subID: in.subID, repoURL: in.repo.url(), enrolmentToken: token})
 	if err != nil {
 		return installation{}, err
 	}
 	gatewayAddr := netip.MustParseAddr(gatewayAddress)
 	config, err := nodeconfig.Render(nodeconfig.Cluster{
-		Name:           clusterName(in.appName),
-		SubscriptionID: in.subID,
-		Profile:        nodeconfig.HCloud,
-		Components:     set,
-		Secrets:        secrets,
-		Network:        netip.MustParsePrefix(networkIPRange),
-		APIAddresses:   []netip.Addr{in.apiAddress},
-		Gateways:       []netip.Addr{gatewayAddr},
-		GatewayCA:      gatewayCA.Cert,
+		Name:                 clusterName(in.appName),
+		SubscriptionID:       in.subID,
+		Profile:              nodeconfig.HCloud,
+		Components:           set,
+		Secrets:              secrets,
+		Network:              netip.MustParsePrefix(networkIPRange),
+		APIAddresses:         []netip.Addr{in.apiAddress},
+		Gateways:             []netip.Addr{gatewayAddr},
+		GatewayCA:            gatewayCA.Cert,
+		ServiceAccountIssuer: issuerURL(bucket, in.subID),
 	}, nodeconfig.Node{})
 	if err != nil {
 		return installation{}, err
@@ -170,7 +176,10 @@ func renderInstallation(in installInputs) (installation, error) {
 	if err != nil {
 		return installation{}, err
 	}
-	return installation{gatewayUserData: gatewayData, builderUserData: builderData, enrolmentDigest: enrolmentTokenDigest(token)}, nil
+	return installation{
+		gatewayUserData: gatewayData, builderUserData: builderData,
+		enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket,
+	}, nil
 }
 
 func renderGateway(in installInputs, ca gateway.CA, set components.Set, secrets *nodeconfig.Secrets) (string, error) {

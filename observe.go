@@ -254,6 +254,11 @@ func (st clusterState) present(subID, repoURL string) contract.Observation {
 	outputs["privateEndpoint"] = "https://" + endpoint.PrivateIPs[network.ID] + ":" + strconv.Itoa(apiServerPort)
 	outputs["publicIpByLocation"] = string(byLocation)
 	outputs["subscriptionId"] = subID
+	// A gateway without the label belongs to a cluster whose nodes sign for no public issuer.
+	if bucket := gw.Labels[keyIssuerBucket]; bucket != "" {
+		outputs["issuerBucket"] = bucket
+		outputs["issuerUrl"] = issuerURL(bucket, subID).String()
+	}
 	return contract.Observation{
 		State:   contract.Present,
 		Outputs: outputs,
