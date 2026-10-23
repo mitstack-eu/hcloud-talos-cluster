@@ -81,6 +81,8 @@ github.com/mitstack-eu/operator-kit/v3 v3.1.0 h1:v1Z3DZX6tRo47Hy8q4W9nDC2YwdCYUL
 github.com/mitstack-eu/operator-kit/v3 v3.1.0/go.mod h1:NTxDUOWN9njBv1RuhWzjQ5P2RocNEocw+DjaL4NmIIw=
 github.com/mitstack-eu/talos-cluster-kit v0.10.0 h1:/X9EnOcaHDic0ts3MdoJ81TF5QpI4MkSrutfp42wT4w=
 github.com/mitstack-eu/talos-cluster-kit v0.10.0/go.mod h1:d59TdsPdm85UBQ44xdPwg9yDB2ANCYPsvDdyTGBHep8=
+github.com/mitstack-eu/talos-cluster-kit v0.11.0 h1:/V4WtynO2/YONWV7Am8cKltKOEsnk8WJJfrNeLONV7A=
+github.com/mitstack-eu/talos-cluster-kit v0.11.0/go.mod h1:d59TdsPdm85UBQ44xdPwg9yDB2ANCYPsvDdyTGBHep8=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/onsi/ginkgo/v2 v2.20.1 h1:YlVIbqct+ZmnEph770q9Q7NVAz4wwIiVNahee6JyUzo=

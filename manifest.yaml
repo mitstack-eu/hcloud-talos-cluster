@@ -22,16 +22,18 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.9.0
+  version: 0.10.0
   releaseClass: feature
   releaseNote: >-
-    Each cluster's node report posts again: on 0.7.0 and 0.8.0 it stopped
-    before posting, because the tools image's jq refused the CloudNativePG
-    read's exit status. Each read now runs under a time limit, and a read
-    that fails or times out is posted as a report whose error names it,
-    with the end of its error output and no token, so a cluster that cannot
-    report says why instead of going silent. The block takes
-    talos-cluster-kit v0.10.0.
+    Every pod of a new cluster, outside kube-system, istio-system and
+    kyverno, runs in Istio's ambient mesh. Each call between two pods
+    carries mutual TLS with a certificate naming the caller's service
+    account, issued inside the cluster for 24 hours and renewed at half its
+    life, and a pod refuses a call without one. Only the admission webhook
+    ports the API server calls take a call without one. Kyverno refuses a
+    pod outside the mesh and a policy that would admit plain calls. A
+    cluster built by an earlier release gets the mesh only by being built
+    again. The block takes talos-cluster-kit v0.11.0.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
     control-plane node in each of fsn1, nbg1 and hel1 behind an API and an
