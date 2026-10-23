@@ -87,7 +87,7 @@ overwrite_disk() {
   printf s > "$proc/sysrq-trigger"
   printf u > "$proc/sysrq-trigger"
   local dev mnt fs opts rest
-  until while read -r dev mnt fs opts rest; do [ "$mnt" = / ] && [ "${opts%%,*}" = ro ] && exit 0; done < "$proc/mounts"; exit 1; do :; done
+  until (while read -r dev mnt fs opts rest; do [ "$mnt" = / ] && [ "${opts%%,*}" = ro ] && exit 0; done < "$proc/mounts"; exit 1); do :; done
   "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/zstd" -dc "$image" |
     "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/dd" of="$disk" bs=4M oflag=direct conv=fsync status=none
   printf o > "$proc/sysrq-trigger"
