@@ -84,9 +84,19 @@ stage() {
 overwrite_disk() {
   local staged=$1 image=$2 disk=$3 proc=$4
   exec > /dev/null 2>&1
+  printf 'diag: final stage started\n' > /dev/kmsg
   "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/zstd" -dc "$image" |
     "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/dd" of="$disk" bs=4M oflag=direct conv=fsync status=none
+  printf 'diag: dd finished, writing o\n' > /dev/kmsg
   printf o > "$proc/sysrq-trigger"
+  printf 'diag: o written\n' > /dev/kmsg
+  "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/sleep" 90
+  printf 'diag: 90s after o, dumping blocked tasks\n' > /dev/kmsg
+  printf w > "$proc/sysrq-trigger"
+  "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/sleep" 60
+  printf 'diag: 150s after o, dumping blocked tasks and CPUs\n' > /dev/kmsg
+  printf w > "$proc/sysrq-trigger"
+  printf l > "$proc/sysrq-trigger"
 }
 
 # write_disk freezes the root filesystem, which flushes the removed out, then execs the final stage from the tmpfs in
@@ -99,21 +109,50 @@ write_disk() {
   cp "${images[0]}" "$work/image.raw.zst"
   rm -rf "$out"
   mkdir -p "$staged"
-  for program in bash zstd dd; do
+  for program in bash zstd dd sleep; do
     stage "$program"
   done
   printf '%s\n' "set -euo pipefail" "$(declare -f overwrite_disk)" "overwrite_disk \"\$@\"" > "$staged/overwrite-disk"
   echo "build-image: writing the image to $disk and powering off"
+  printf 'diag: freezing / on %s vCPUs, %s\n' "$(nproc)" "$(grep MemTotal /proc/meminfo)" > /dev/kmsg
   fsfreeze -f /
   LC_ALL=C exec "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/bash" "$staged/overwrite-disk" \
     "$staged" "$work/image.raw.zst" "$disk" "$proc"
 }
 
+# diag_netconsole streams every kernel message to the gateway on UDP 6666, and names each device device_shutdown reaches.
+diag_netconsole() {
+  local route via dev mac target=/sys/kernel/config/netconsole/probe
+  route=$(ip -o route get 10.0.0.2)
+  via=$(sed -n 's/.* via \([^ ]*\).*/\1/p' <<< "$route")
+  dev=$(sed -n 's/.* dev \([^ ]*\).*/\1/p' <<< "$route")
+  ping -c 2 -W 2 "${via:-10.0.0.2}" > /dev/null || true
+  mac=$(ip neigh show "${via:-10.0.0.2}" dev "$dev" | sed -n 's/.* lladdr \([^ ]*\).*/\1/p')
+  printf 8 > /proc/sys/kernel/printk
+  printf 1 > /sys/module/kernel/parameters/initcall_debug
+  printf 30 > /proc/sys/kernel/hung_task_timeout_secs
+  printf -- -1 > /proc/sys/kernel/hung_task_warnings
+  modprobe netconsole
+  mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
+  mkdir -p "$target"
+  printf '%s' "$dev" > "$target/dev_name"
+  printf 10.0.0.4 > "$target/local_ip"
+  printf 10.0.0.2 > "$target/remote_ip"
+  printf 6666 > "$target/remote_port"
+  printf '%s' "$mac" > "$target/remote_mac"
+  printf 1 > "$target/enabled"
+  printf 'diag: netconsole on %s via %s mac %s, kernel %s\n' "$dev" "$via" "$mac" "$(uname -r)" > /dev/kmsg
+}
+
 main() {
   [ "$#" -eq 3 ] || fail "usage: build-image.sh <imager image> <machine configuration> <network router>"
   route_through_gateway "$3"
+  diag_netconsole || echo "build-image: diag netconsole failed" >&2
+  printf 'diag: pulling imager\n' > /dev/kmsg
   pull_imager "$1"
+  printf 'diag: imager pulled, building\n' > /dev/kmsg
   build "$1" "$2"
+  printf 'diag: image built, %s\n' "$(ls -l "$out")" > /dev/kmsg
   write_disk
 }
 
