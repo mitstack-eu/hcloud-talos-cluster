@@ -24,11 +24,15 @@ func observers() map[string]handler.Observer {
 		resRepository: repositoryObserver{},
 		resSeedCommit: seedCommitObserver{},
 		resCluster:    clusterObserver{},
+		located(resPrivateLB, gatewayLocation): labelledObserver{
+			kind: gatewayLocation + " API load balancer", list: listLoadBalancersIn(roleAPI, gatewayLocation),
+		},
+		located(resPublicLB, gatewayLocation): labelledObserver{
+			kind: gatewayLocation + " ingress load balancer", list: listLoadBalancersIn(roleIngress, gatewayLocation),
+		},
 	}
 	for _, loc := range clusterLocations {
-		out[located(resPrivateLB, loc.name)] = labelledObserver{kind: loc.name + " API load balancer", list: listLoadBalancersIn(roleAPI, loc.name)}
-		out[located(resPublicLB, loc.name)] = labelledObserver{kind: loc.name + " ingress load balancer", list: listLoadBalancersIn(roleIngress, loc.name)}
-		out[located(resNode, loc.name)] = labelledObserver{kind: loc.name + " node", list: listNodesIn(loc.name)}
+		out[located(resNode, loc)] = labelledObserver{kind: loc + " node", list: listNodesIn(loc)}
 	}
 	return out
 }
@@ -238,16 +242,14 @@ func (st clusterState) enrolment(repo repoObservation) (map[string]string, strin
 func (st clusterState) present(subID, repoURL string) contract.Observation {
 	network, _ := st.network()
 	gw, _ := st.server(roleGateway)
-	endpoint, _ := st.loadBalancerIn(roleAPI, clusterLocations[0].name)
-	publicIPs := map[string]string{}
+	endpoint, _ := st.loadBalancerIn(roleAPI, gatewayLocation)
+	ingress, _ := st.loadBalancerIn(roleIngress, gatewayLocation)
 	var nodes []string
 	for _, loc := range clusterLocations {
-		ingress, _ := st.loadBalancerIn(roleIngress, loc.name)
-		publicIPs[loc.name] = ingress.PublicIPv4
-		node, _ := st.nodeIn(loc.name)
-		nodes = append(nodes, fmt.Sprintf("%d in %s at %s", node.ID, loc.name, node.PrivateIPs[network.ID]))
+		node, _ := st.nodeIn(loc)
+		nodes = append(nodes, fmt.Sprintf("%d in %s at %s", node.ID, loc, node.PrivateIPs[network.ID]))
 	}
-	byLocation, _ := json.Marshal(publicIPs)
+	byLocation, _ := json.Marshal(map[string]string{gatewayLocation: ingress.PublicIPv4})
 	outputs := enrolmentOutputs(gw.Labels[keyEnrolmentSHA256], repoURL)
 	outputs["privateEndpoint"] = "https://" + endpoint.PrivateIPs[network.ID] + ":" + strconv.Itoa(apiServerPort)
 	outputs["publicIpByLocation"] = string(byLocation)
@@ -255,8 +257,8 @@ func (st clusterState) present(subID, repoURL string) contract.Observation {
 	return contract.Observation{
 		State:   contract.Present,
 		Outputs: outputs,
-		StatusDetail: fmt.Sprintf("nodes %s are on network %d behind gateway %d, a public and a private load balancer in each location reach them, and the newest node report reads every node Ready",
-			strings.Join(nodes, ", "), network.ID, gw.ID),
+		StatusDetail: fmt.Sprintf("nodes %s are on network %d behind gateway %d, an API and an ingress load balancer in %s reach them, and the newest node report reads every node Ready",
+			strings.Join(nodes, ", "), network.ID, gw.ID, gatewayLocation),
 	}
 }
 
@@ -331,9 +333,9 @@ func (st clusterState) gatewayProblems(network hcNetwork, firewall hcFirewall) [
 func (st clusterState) nodeProblems(network hcNetwork, firewall hcFirewall) []string {
 	var missing []string
 	for _, loc := range clusterLocations {
-		node, ok := st.nodeIn(loc.name)
+		node, ok := st.nodeIn(loc)
 		if !ok {
-			missing = append(missing, "no node in "+loc.name+" carries this subscription's labels")
+			missing = append(missing, "no node in "+loc+" carries this subscription's labels")
 			continue
 		}
 		if node.PrivateIPs[network.ID] == "" {
@@ -351,18 +353,16 @@ func (st clusterState) nodeProblems(network hcNetwork, firewall hcFirewall) []st
 
 func (st clusterState) loadBalancerProblems(network hcNetwork) []string {
 	var missing []string
-	for _, loc := range clusterLocations {
-		for _, lb := range []struct {
-			role   role
-			public bool
-		}{{roleAPI, false}, {roleIngress, true}} {
-			found, ok := st.loadBalancerIn(lb.role, loc.name)
-			if !ok {
-				missing = append(missing, "no "+string(lb.role)+" load balancer in "+loc.name+" carries this subscription's labels")
-				continue
-			}
-			missing = append(missing, found.reachProblems(network, lb.public)...)
+	for _, lb := range []struct {
+		role   role
+		public bool
+	}{{roleAPI, false}, {roleIngress, true}} {
+		found, ok := st.loadBalancerIn(lb.role, gatewayLocation)
+		if !ok {
+			missing = append(missing, "no "+string(lb.role)+" load balancer in "+gatewayLocation+" carries this subscription's labels")
+			continue
 		}
+		missing = append(missing, found.reachProblems(network, lb.public)...)
 	}
 	return missing
 }

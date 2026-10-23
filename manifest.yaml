@@ -1,10 +1,10 @@
 # hcloud-talos-cluster runs a three-node Talos Kubernetes cluster on Hetzner
 # Cloud for one app, from talos-cluster-kit, with one control-plane node in
 # each of fsn1, nbg1 and hel1. Subscribe creates a private network whose
-# default route goes to a gateway, a firewall with no rule, and in each
-# location a private load balancer for the Kubernetes API and a public one for
-# ports 80 and 443 that both find every node by label, and a private cluster
-# repository on GitHub. The gateway, the cluster's only server with a public
+# default route goes to a gateway, a firewall with no rule, and in fsn1, the
+# gateway's location, a private load balancer for the Kubernetes API and a
+# public one for ports 80 and 443 that both find every node by label, and a
+# private cluster repository on GitHub. The gateway, the cluster's only server with a public
 # address, forwards and records the nodes' traffic and serves their image
 # mirror. A short-lived builder builds the cluster's own disk image with the
 # machine configuration embedded, writes it to its disk and powers off, and
@@ -22,20 +22,21 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.5.0
+  version: 0.6.0
   releaseClass: feature
   releaseNote: >-
-    The block takes talos-cluster-kit v0.7.0, so a new cluster's node report
-    carries the checks member the platform's verdict reads, declaring the
-    node-report/v1 contract and naming no check. The release is 0.5.0, a
-    feature and so a minor raise, as 0.3.0 was for kit v0.5.0, because the
-    report gains a member the platform reads. A cluster that does not host
-    the platform renders as before, and hostsPlatform=true is still refused.
+    One API and one ingress load balancer in fsn1, the gateway's location,
+    serve the three nodes by private IP, in place of a pair in each
+    location, so a cluster needs two load balancers and fits the Hetzner
+    project's limit. publicIpByLocation carries fsn1 alone. The release is
+    0.6.0, a feature and so a minor raise, as 0.4.0 was for the three
+    locations, because the declared resources change. It carries no upgrade
+    from a cluster with a pair in each location.
   description: >
-    Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, one
-    control-plane node in each of fsn1, nbg1 and hel1 behind load balancers
-    in each location, booted from its own image, with Argo CD syncing a
-    repository the block creates.
+    Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
+    control-plane node in each of fsn1, nbg1 and hel1 behind an API and an
+    ingress load balancer in fsn1, booted from its own image, with Argo CD
+    syncing a repository it creates.
   lifecycle:
     endpoint: https://api.mitstack.dev/operators/hcloud-talos-cluster/hook
     operations: [subscribe, unsubscribe, upgrade, validate]
@@ -51,14 +52,6 @@ spec:
     - name: api-load-balancer-fsn1
       type: hetzner.load-balancer
     - name: ingress-load-balancer-fsn1
-      type: hetzner.load-balancer
-    - name: api-load-balancer-nbg1
-      type: hetzner.load-balancer
-    - name: ingress-load-balancer-nbg1
-      type: hetzner.load-balancer
-    - name: api-load-balancer-hel1
-      type: hetzner.load-balancer
-    - name: ingress-load-balancer-hel1
       type: hetzner.load-balancer
     - name: github.repository
       type: github.gitops-repository
