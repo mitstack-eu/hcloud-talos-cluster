@@ -90,19 +90,6 @@ overwrite_disk() {
   printf 'diag: dd finished, writing o\n' > /dev/kmsg
   printf o > "$proc/sysrq-trigger"
   printf 'diag: o written\n' > /dev/kmsg
-  diag_dump "$staged" "$proc" &
-}
-
-# diag_dump outlives the final stage, which exits after o as the shipped script does, and dumps the kernel's state.
-diag_dump() {
-  local staged=$1 proc=$2
-  "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/sleep" 60
-  printf 'diag: 60s after o, blocked tasks and CPUs\n' > /dev/kmsg
-  printf w > "$proc/sysrq-trigger"
-  printf l > "$proc/sysrq-trigger"
-  "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/sleep" 60
-  printf 'diag: 120s after o, every task and workqueue\n' > /dev/kmsg
-  printf t > "$proc/sysrq-trigger"
 }
 
 # write_disk freezes the root filesystem, which flushes the removed out, then execs the final stage from the tmpfs in
@@ -115,10 +102,10 @@ write_disk() {
   cp "${images[0]}" "$work/image.raw.zst"
   rm -rf "$out"
   mkdir -p "$staged"
-  for program in bash zstd dd sleep; do
+  for program in bash zstd dd; do
     stage "$program"
   done
-  printf '%s\n' "set -euo pipefail" "$(declare -f overwrite_disk diag_dump)" "overwrite_disk \"\$@\"" > "$staged/overwrite-disk"
+  printf '%s\n' "set -euo pipefail" "$(declare -f overwrite_disk)" "overwrite_disk \"\$@\"" > "$staged/overwrite-disk"
   echo "build-image: writing the image to $disk and powering off"
   printf 'diag: freezing / on %s vCPUs, %s\n' "$(nproc)" "$(grep MemTotal /proc/meminfo)" > /dev/kmsg
   fsfreeze -f /
@@ -134,8 +121,6 @@ diag_netconsole() {
   dev=$(sed -n 's/.* dev \([^ ]*\).*/\1/p' <<< "$route")
   ping -c 2 -W 2 "${via:-10.0.0.2}" > /dev/null || true
   mac=$(ip neigh show "${via:-10.0.0.2}" dev "$dev" | sed -n 's/.* lladdr \([^ ]*\).*/\1/p')
-  printf 8 > /proc/sys/kernel/printk
-  printf 1 > /sys/module/kernel/parameters/initcall_debug
   printf 30 > /proc/sys/kernel/hung_task_timeout_secs
   printf -- -1 > /proc/sys/kernel/hung_task_warnings
   modprobe netconsole
