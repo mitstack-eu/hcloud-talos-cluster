@@ -70,8 +70,7 @@ const (
 // gatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.
 var gatewayServerTypes = []string{"cx23", "cpx22"}
 
-// clusterLocations hold a node each; the first also holds the gateway, the builder and both load balancers, since the
-// one gateway carries all egress, so a pair elsewhere keeps nothing serving once the gateway's location is lost.
+// clusterLocations hold a node each; the first also holds the gateway, the builder and both load balancers.
 var clusterLocations = []string{"fsn1", "nbg1", "hel1"}
 
 var gatewayLocation = clusterLocations[0]
