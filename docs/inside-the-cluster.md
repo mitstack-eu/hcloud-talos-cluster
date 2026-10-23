@@ -53,25 +53,35 @@ keeps copies on other nodes itself.
 [talos-cluster-kit's README](https://github.com/mitstack-eu/talos-cluster-kit/blob/v0.9.0/README.md#where-a-claim-keeps-its-data)
 gives the details.
 
-Each node encrypts its `STATE` and `EPHEMERAL` volumes with LUKS2 when it first
-boots. The key comes from the node's own UUID, and `EPHEMERAL`'s also takes a
-random salt kept on that node's `STATE`. The image every node boots from holds
-neither volume, so each node formats both under keys of its own. etcd, OpenBao's data and every
-storage claim sit on `EPHEMERAL`, so a disk taken from its server yields
-nothing readable. The key does not protect against whoever holds the Hetzner
-project's token. A cluster built by an earlier release stays unencrypted until
-it is built again.
+Talos keeps a node's own state, its configuration among it, on a disk
+partition it calls `STATE`, and everything else it writes on one called
+`EPHEMERAL`. etcd, the data of OpenBao (the hosting cluster's secret store)
+and every storage claim sit on `EPHEMERAL`. Each node encrypts both with LUKS2,
+Linux's standard disk encryption, when it first boots. The key comes from the
+node's own UUID, and `EPHEMERAL`'s also takes a random salt kept on that
+node's `STATE`. The image every node boots from holds neither volume, so each
+node formats both under keys of its own, and a disk taken from its server
+yields nothing readable. It does not protect against whoever holds the Hetzner
+project's token, who can boot a server into Hetzner's rescue system and read
+its UUID beside its disk.
+A cluster subscribed before hcloud-talos-cluster 0.11.0 stays unencrypted until
+it is unsubscribed and subscribed again.
+[talos-cluster-kit's README](https://github.com/mitstack-eu/talos-cluster-kit/blob/v0.12.0/README.md#what-the-configuration-holds)
+gives the details.
 
-The node report also lists CloudNativePG's clusters, databases and roles in a
-read of its own, which fails apart from the nodes and Applications it reads.
-It names each node's `STATE` and `EPHEMERAL` under `systemVolumes`, with the
-encryption provider and key each uses, in another such read. It lists every
-object a block labels `mitstack.dev/subscription`, of the thirteen object
-types a block creates, under `subscriptionResources`, with `madeAt`, the time
-its reads began. `subscriptionResourceKinds` names each object type whose read
-finished whole, so mitstack reads an unlisted object of that type as gone and
-an unlisted object of any other type as unknown. The report may read no
-Secret, so a Secret a block creates is never one of those types.
+The node report is a CronJob in `mitstack-node` that reads the cluster every
+five minutes and posts what it finds to mitstack. It also lists CloudNativePG's
+clusters, databases and roles in a read of its own, which fails apart from the
+nodes and Applications it reads. It names each node's `STATE` and `EPHEMERAL`
+under `systemVolumes`, with the encryption provider and key each uses, in
+another such read. It lists every object labelled `mitstack.dev/subscription`
+of thirteen object types the report reads, such as Namespace, Deployment and
+ExternalSecret, under `subscriptionResources`, with `madeAt`, the time its
+reads began. `subscriptionResourceKinds` names each object type whose read
+finished whole. mitstack reads an object of such a type that the list leaves
+out as gone, once the report's `madeAt` is after the request that created or
+deleted it. It reads a left-out object of any other type as unknown. The report
+may read no Secret, so Secret is never one of those types.
 Each read runs under a time limit. When any other read, or the build of the
 report itself, fails or times out, the cluster posts a report holding only an
 `error` that names the read, its exit status or that it timed out, and the end
