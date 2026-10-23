@@ -508,6 +508,24 @@ func TestBuilder_TheNodeReportPostsAnErrorNamingTheReadThatFailed(t *testing.T) 
 	assert.Equal(t, map[string]any{"read": "kubectl get nodes", "exitStatus": float64(1), "stderr": "error: forbidden\n"}, posted["error"])
 }
 
+func TestBuilder_TheNodeReportNamesEachKindItReadWholeAndMayReadNoSecret(t *testing.T) {
+	e := subscribedOnce(t)
+	roles := testutil.Kind(inlineManifests(t, builderConfiguration(t, e))["mitstack-node-report"], "ClusterRole")
+
+	posted := runNodeReport(t, nodeReportScript(t))
+
+	assert.IsType(t, "", posted["madeAt"], "the node report's madeAt")
+	assert.Equal(t, []any{}, posted["subscriptionResources"], "a cluster with no labelled objects lists none")
+	kinds, _ := posted["subscriptionResourceKinds"].([]any)
+	assert.Subset(t, kinds, []any{"namespace", "deployment.apps", "appproject.argoproj.io", "externalsecret.external-secrets.io"},
+		"the kinds the node report read whole")
+	assert.NotContains(t, posted, "subscriptionResourcesComplete")
+	require.Len(t, roles, 1, "the node report's ClusterRoles")
+	for _, rule := range testutil.Field(t, roles[0], "rules").([]any) {
+		assert.NotContains(t, testutil.Field(t, rule, "resources"), "secrets", "rule %v grants a verb on secrets", rule)
+	}
+}
+
 // nodeReportScript returns the script the builder's node report CronJob runs.
 func nodeReportScript(t *testing.T) string {
 	t.Helper()
