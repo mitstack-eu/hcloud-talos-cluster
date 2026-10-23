@@ -133,8 +133,9 @@ cluster by its labels alone and needs no memory of the last one.
    [What a build reports while it runs and when it fails](#what-a-build-reports-while-it-runs-and-when-it-fails)
    covers a slow or failed build.
 5. The next three requests create one node each, in `fsn1`, `nbg1` and `hel1`,
-   every one booted from the snapshot. The gateway then checks that the first
-   node it finds belongs to this cluster, and starts etcd on it.
+   every one booted from the snapshot. The gateway then finds the first node,
+   checks that its Talos API presents a certificate signed by this cluster's
+   own certificate authority, and asks it through that API to start etcd.
    [How a subscribe proceeds](#how-a-subscribe-proceeds) walks every step and
    says which parts a live run has not yet shown.
 6. Between subscribe requests, mitstack checks the cluster with a validate
@@ -151,8 +152,9 @@ cluster by its labels alone and needs no memory of the last one.
 
 In the code, `nextStep` in `resource.go` picks the one step a request takes,
 and `Ensure` takes it. `stepLeft` in `observe.go` uses the same `nextStep` to
-decide when validate asks for the next subscribe. An upgrade adds
-whatever is missing and never replaces a server.
+decide when validate asks for the next subscribe. An upgrade request, which
+moves a subscription to a newer release of the block, adds whatever is missing
+and never replaces a server.
 
 ### When an app unsubscribes
 
@@ -173,8 +175,9 @@ whatever is missing and never replaces a server.
 
 ## What is in the repository
 
-Every new block starts from the same files, which mitstack's scaffold writes.
-They come from the templates in the workspace's
+Every new block starts from the same files, which mitstack's scaffold, its
+generator of new block repositories, writes. They come from the templates in
+the mitstack workspace's
 `platform/api/internal/scaffold/blockkitv1/`, plus `go.mod` and
 `.github/workflows/block-verify.yml`. This block has most of them, and adds its
 own files after.
@@ -184,7 +187,7 @@ own files after.
 | File | What it holds in this block |
 |---|---|
 | `manifest.yaml` | What the block is, the resources it builds, the type it provides and the requests it answers |
-| `main.go` | Starts the operator and serves the `/hook`, `/logs` and `/healthz` routes. It reads `MITSTACK_JWKS_URL`, where mitstack's signing keys are published, to check each request |
+| `main.go` | Starts the operator's web service: `/hook` takes mitstack's requests, `/logs` serves the operator's recent log lines and `/healthz` answers a health check. It reads `MITSTACK_JWKS_URL`, the address where mitstack publishes its signing keys, to check each request |
 | `resource.go` | Reads the params and the Hetzner token, and takes each subscribe step |
 | `Dockerfile` | Builds the operator's container image |
 | `go.mod` | The Go module, and the versions of the modules it uses, among them the operator kit and talos-cluster-kit |
@@ -212,7 +215,7 @@ type snapshot sits at `testdata/type-snapshot.json` instead.
 | `manifests/` | Those manifests: the Argo CD Applications, the Job that signs the cluster up, and the token renewal |
 | `scripts/` | The shell scripts the servers run, to build the image, start the first node and fetch the cluster's tokens |
 | `repository.go` | Creates, reads and deletes the cluster repository on GitHub |
-| `observe.go` | Judges each resource present, absent or unknown, sets the outputs, and tells mitstack when to send the next subscribe |
+| `observe.go` | The observers, which read each resource from Hetzner and GitHub and report it present, absent or not yet known. They also set the outputs and tell mitstack when to send the next subscribe |
 | `metrics.go` | Reads the builder's CPU and disk metrics from Hetzner, for the progress and failure messages |
 | `nodereports.go` | Reads the cluster's node reports from mitstack |
 | `teardown.go` | Runs the unsubscribe |
