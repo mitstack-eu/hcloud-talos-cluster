@@ -16,6 +16,7 @@ flowchart TD
     subgraph hetzner["Hetzner Cloud"]
         lb["Load balancers<br/>API and web, fsn1"]
         subgraph cluster["Your cluster"]
+            direction LR
             n1["Node<br/>Falkenstein fsn1"]
             n2["Node<br/>Nuremberg nbg1"]
             n3["Node<br/>Helsinki hel1"]
