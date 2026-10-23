@@ -25,12 +25,13 @@ spec:
   version: 0.7.0
   releaseClass: feature
   releaseNote: >-
-    A new cluster signs its service-account tokens for an issuer under its
-    subscription id in an S3 bucket name minted for it, mitstack-oidc- and
-    26 random characters, and outputs them as issuerUrl and issuerBucket.
-    Its node report carries the API server's key set as jwks, which the
-    platform publishes there, so an AWS role can trust the cluster's
-    workloads. The block takes talos-cluster-kit v0.8.0.
+    Each new cluster gets an S3 bucket name of its own, mitstack-oidc- and
+    26 random characters. Its service-account tokens name the issuer at
+    that bucket's URL under the subscription id, which the block outputs as
+    issuerUrl, with the bucket as issuerBucket. Its node report carries the
+    API server's key set as jwks, which the platform publishes in that
+    bucket, so an AWS role can trust the cluster's workloads. The block
+    takes talos-cluster-kit v0.8.0.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
     control-plane node in each of fsn1, nbg1 and hel1 behind an API and an

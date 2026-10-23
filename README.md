@@ -452,12 +452,19 @@ while it still reads unknown, so the platform holds them before any node enrols.
 | `issuerBucket`, the S3 bucket name the install mints for the cluster's issuer, such as `mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle`, read from the gateway's `mitstack.dev/issuer-bucket` label | No | Once the gateway carries that label |
 | `issuerUrl`, the issuer every node signs service-account tokens for, `https://<issuerBucket>.s3.eu-central-1.amazonaws.com/<subscriptionId>` | No | Once the gateway carries that label |
 
-The install mints the bucket name from 16 random bytes, as hcloud-k3s-cluster
-does, and labels the gateway with it in the same call that mints the
-cluster's keys. The machine configuration names `issuerUrl` as the API
-server's service-account issuer. The platform creates the bucket in the org's
-connected AWS account and publishes the discovery document there, with the key
-set the node report carries. A cluster whose gateway carries no
+The issuer lets a pod on the cluster call AWS, such as to pull an image from
+ECR, with a short-lived service-account token in place of a stored key. Each
+token names the issuer, a public URL where AWS reads the discovery document
+that describes the issuer and the key set that checks the token's signature.
+
+`mintIssuerBucket` in `identity.go` mints the bucket name from 16 random
+bytes, as hcloud-k3s-cluster does, and `issuerURL` puts the subscription id
+under the bucket. `install` in `install.go` labels the gateway with the bucket
+in the same call that mints the cluster's keys. The machine configuration
+names `issuerUrl` as the API server's service-account issuer. The platform
+creates the bucket in the org's connected AWS account and publishes the
+discovery document and the key set there. `clusterState.present` in
+`observe.go` reads the label back. A cluster whose gateway carries no
 `mitstack.dev/issuer-bucket` label signs for its private endpoint and outputs
 neither value.
 
@@ -498,8 +505,9 @@ CloudNativePG's clusters, databases and roles in a read of its own, which
 fails apart from the nodes and Applications it reads. Each report carries a
 `checks` member, `{"contract": "node-report/v1", "names": []}`, which names
 the contract the report follows and none of the platform verdict's checks,
-because none of its reads carries one. The report also carries the API
-server's key set as `jwks`, which the platform publishes under `issuerUrl`.
+because none of its reads carries one. The report, talos-cluster-kit's
+`report/scripts/report.sh`, also carries the API server's key set as `jwks`,
+which the platform publishes under `issuerUrl`.
 
 Talos applies these manifests when the node first boots, and on each later
 boot it creates only what is missing. It never edits a resource that exists. The block has no call that re-applies a node's configuration. A
@@ -544,7 +552,7 @@ shellcheck scripts/*.sh
 
 | Test file | What it proves |
 |---|---|
-| `subscribe_test.go` | A node in each of the three locations on one network, one API and one ingress load balancer in `fsn1` at their fixed addresses, the ingress address under `fsn1`, no node with user data, only the gateway with a public address, every refusal, the builder's metrics in the build progress and the `image-build-failed` refusal, the cluster's enrolment outputs while it waits on its nodes' report, and its `issuerBucket` and `issuerUrl` beside the issuer its nodes sign for |
+| `subscribe_test.go` | A node in each of the three locations on one network, one API and one ingress load balancer in `fsn1` at their fixed addresses, the ingress address under `fsn1`, no node with user data, only the gateway with a public address, every refusal, the builder's metrics in the build progress and the `image-build-failed` refusal, the cluster's enrolment outputs while it waits on its nodes' report, and its `issuerBucket` and `issuerUrl`, checked against the issuer in the builder's machine configuration |
 | `redrive_test.go` | One subscribe reaching all three nodes through the platform's re-drives, validate asking for one exactly when a subscribe has a step to take, at most one Hetzner action waited and one node created per call, and a doubled re-drive making nothing twice |
 | `userdata_test.go` | The builder's embedded configuration with the API load balancer's address in its certificates and the cluster's components, its user data within Hetzner's limit, the gateway's two cloud-config parts, mirror and served manifests, the node report's `checks` member, and a default cluster's components, mirror and configuration documents against `testdata/default-cluster.golden` |
 | `scripts_test.go` | The build, the first-node bootstrap and the cluster's credential calls |
