@@ -57,7 +57,6 @@ builder-file /usr/local/bin/mitstack-build-image 0755
 builder-run /usr/local/bin/mitstack-build-image ghcr.io/siderolabs/imager:v1.14.4@sha256:91d453a7cf57d499fe7fe7923e1e381b6e1535136367246d190e38486c11651d /root/mitstack-build/config.yaml 10.0.0.1
 document v1alpha1
 document DiscoveryIdentityConfig
-document VolumeConfig EPHEMERAL
 document FilesystemTrimConfig
 document SecurityProfileConfig
 document KubeClusterConfig
@@ -92,6 +91,8 @@ document RegistryMirrorConfig public.ecr.aws
 document RegistryMirrorConfig quay.io
 document RegistryMirrorConfig registry.k8s.io
 document RegistryTLSConfig 10.0.0.2
+document VolumeConfig STATE
+document VolumeConfig EPHEMERAL
 document UserVolumeConfig local-path-provisioner
 document KubeExternalManifestConfig cilium
 document KubeExternalManifestConfig cilium-policy-crd

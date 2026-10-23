@@ -53,8 +53,34 @@ keeps copies on other nodes itself.
 [talos-cluster-kit's README](https://github.com/mitstack-eu/talos-cluster-kit/blob/v0.9.0/README.md#where-a-claim-keeps-its-data)
 gives the details.
 
-The node report also lists CloudNativePG's clusters, databases and roles in a
-read of its own, which fails apart from the nodes and Applications it reads.
+Talos keeps a node's own state, its configuration among it, on a disk
+partition it calls `STATE`, and everything else it writes on one called
+`EPHEMERAL`. etcd, every storage claim and, on a cluster that hosts mitstack
+itself, the data of its secret store OpenBao sit on `EPHEMERAL`. Each node
+encrypts both with LUKS2, Linux's standard disk encryption, when it first
+boots. Talos's `nodeID` key derives each key from the node's own UUID, and
+`EPHEMERAL`'s also takes a random salt kept on that node's `STATE`. The image
+every node boots from holds neither volume, so each node formats both under
+keys of its own, and a disk taken from its server yields nothing readable.
+The keys do not protect against whoever holds the Hetzner project's token.
+A cluster subscribed before hcloud-talos-cluster 0.11.0 stays unencrypted until
+it is unsubscribed and subscribed again.
+[talos-cluster-kit's README](https://github.com/mitstack-eu/talos-cluster-kit/blob/v0.12.0/README.md#what-the-configuration-holds)
+gives the details.
+
+The node report is a CronJob in `mitstack-node` that reads the cluster every
+five minutes and posts what it finds to mitstack. It also lists CloudNativePG's
+clusters, databases and roles in a read of its own, which fails apart from the
+nodes and Applications it reads. It names each node's `STATE` and `EPHEMERAL`
+under `systemVolumes`, with the encryption provider and key each uses, in
+another such read. It lists every object labelled `mitstack.dev/subscription`
+of thirteen object types the report reads, such as Namespace, Deployment and
+ExternalSecret, under `subscriptionResources`, with `madeAt`, the time its
+reads began. `subscriptionResourceKinds` names each object type whose read
+finished whole. When a report made after an unsubscribe leaves out an object
+of such a type, mitstack reads that object as gone. It reads a left-out object
+of any other type as unknown. The report
+may read no Secret, so Secret is never one of those types.
 Each read runs under a time limit. When any other read, or the build of the
 report itself, fails or times out, the cluster posts a report holding only an
 `error` that names the read, its exit status or that it timed out, and the end
@@ -83,7 +109,7 @@ only a new subscribe gets a newer kit's components.
 The node report, the enrolment Job and the token renewal run in the
 talos-cluster-kit tools image, which the kit's own release publishes and signs.
 The block takes it from `tools.Image` in the kit release `go.mod` requires,
-such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.11.0@sha256:db0c3184…`.
+such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.12.0@sha256:7fa01ea4…`.
 A build against a kit whose `tools.Image` carries the `unreleased` placeholder
 tag refuses every subscribe.
 

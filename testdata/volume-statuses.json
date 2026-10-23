@@ -1,0 +1,10 @@
+{
+    "metadata": {"namespace": "block", "type": "VolumeStatuses.block.talos.dev", "id": "STATE"},
+    "node": "10.0.0.3",
+    "spec": {"phase": "ready", "type": "partition", "encryptionProvider": "luks2", "configuredEncryptionKeys": ["nodeID"]}
+}
+{
+    "metadata": {"namespace": "block", "type": "VolumeStatuses.block.talos.dev", "id": "EPHEMERAL"},
+    "node": "10.0.0.3",
+    "spec": {"phase": "ready", "type": "partition", "encryptionProvider": "luks2", "configuredEncryptionKeys": ["nodeID"], "encryptionLockedToState": true}
+}
