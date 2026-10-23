@@ -113,9 +113,10 @@ func subscribedOnce(t *testing.T) *env {
 	return e
 }
 
+// builderConfiguration reads the builder's create request, so it holds once the builder is deleted.
 func builderConfiguration(t *testing.T, e *env) []map[string]any {
 	t.Helper()
-	config := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID]).file(t, builderConfigPath)
+	config := decodeCloudConfig(t, e.hetzner.specFor(t, roleBuilder).UserData).file(t, builderConfigPath)
 	return testutil.Documents(t, []byte(config.Content))
 }
 

@@ -609,8 +609,7 @@ func TestSubscribe_TheClusterOutputsTheIssuerItsNodesSignTokensForInAnIssuerBuck
 	bucket := obs.Outputs["issuerBucket"]
 	assert.Regexp(t, `^mitstack-oidc-[a-z2-7]{26}$`, bucket, "issuerBucket")
 	assert.Equal(t, "https://"+bucket+".s3.eu-central-1.amazonaws.com/"+testSub, obs.Outputs["issuerUrl"], "issuerUrl")
-	config := decodeCloudConfig(t, e.hetzner.specFor(t, roleBuilder).UserData).file(t, builderConfigPath)
-	accounts := testutil.Kind(testutil.Documents(t, []byte(config.Content)), "KubeServiceAccountConfig")
+	accounts := testutil.Kind(builderConfiguration(t, e), "KubeServiceAccountConfig")
 	require.Len(t, accounts, 1, "the builder's machine configuration")
 	assert.Equal(t, obs.Outputs["issuerUrl"], testutil.Field(t, accounts[0], "issuer", "issuerURL"),
 		"the issuer every node signs service-account tokens for")
