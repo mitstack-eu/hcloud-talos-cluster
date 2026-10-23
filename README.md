@@ -66,8 +66,10 @@ minutes.
 
 ## What the block needs
 
-The block needs two params, two connections and no other block. Its manifest
-lists no `requires`, so no other block has to be in place first.
+The block reads three params: two you set, `appName` and `serverType`, and
+`hostsPlatform`, which you leave unset. It also needs two connections and no
+other block. Its manifest lists no `requires`, so no other block has to be in
+place first.
 
 `readParams` in `resource.go` reads the params. A subscribe with a param it
 cannot use is refused before anything is built, with the reason in the last
@@ -76,7 +78,7 @@ column.
 | Param | Required | What it sets | Allowed values |
 |---|---|---|---|
 | `appName` | Yes | The name of the cluster repository, `<appName>-cluster` | Any name. An empty one is refused with `missing-param` |
-| `serverType` | No, `cx33` when empty | The Hetzner server type of each of the three nodes | `cx23`, `cx33`, `cx43`, `cx53`, `cpx32`, `cpx52` or `cpx62`, as `allowedServerTypes` lists. Any other is refused with `invalid-param` |
+| `serverType` | No, `cx33` when empty | The Hetzner server type of each of the three nodes, and of the short-lived builder that makes the cluster's disk image | `cx23`, `cx33`, `cx43`, `cx53`, `cpx32`, `cpx52` or `cpx62`, as `allowedServerTypes` lists. Any other is refused with `invalid-param` |
 | `hostsPlatform` | No | Nothing you can use today: this release builds no cluster that hosts mitstack's own stores | Leave it unset. `true` is refused with `invalid-param` |
 
 Every type in that list is an x86 type, because the cluster's disk image is
@@ -502,7 +504,16 @@ A build against a kit whose `tools.Image` carries the `unreleased` placeholder
 tag refuses every subscribe.
 
 The cluster names no log receiver, so each node keeps its logs, and the gateway
-forwards no log port. The operator needs no setting from its host.
+forwards no log port.
+
+The operator reads its settings from the environment its host gives it, in
+`main.go` and `repository.go`:
+
+| Variable | Required | What it sets |
+|---|---|---|
+| `MITSTACK_JWKS_URL` | Yes. The operator exits at start when it is unset | The address where mitstack publishes its signing keys, which the operator checks each request against |
+| `LISTEN_ADDR` | No, `:8080` when unset | The address the operator's web service listens on |
+| `MITSTACK_GITHUB_API_HOSTS` | No | A comma-separated list of GitHub API hosts the operator accepts beside `api.github.com` |
 
 ## How you change the block
 
