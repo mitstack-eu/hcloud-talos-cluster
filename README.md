@@ -266,7 +266,10 @@ Both policies exempt `mitstack-node`, so the block's own pods need no app
 label and keep their route to the platform. Every image these components pull
 is listed by digest in the gateway's mirror. The node report also lists
 CloudNativePG's clusters, databases and roles in a read of its own, which
-fails apart from the nodes and Applications it reads.
+fails apart from the nodes and Applications it reads. Each report carries a
+`checks` member, `{"contract": "node-report/v1", "names": []}`, which names
+the contract the report follows and none of the platform verdict's checks,
+because none of its reads carries one.
 
 Talos applies these manifests when the node first boots, and on each later
 boot it creates only what is missing. It never edits a resource that exists. The block has no call that re-applies a node's configuration. A
@@ -278,7 +281,7 @@ built with, and only a new subscribe gets a newer kit's components.
 The node report, the enrolment Job and the token renewal run in the
 talos-cluster-kit tools image, which the kit's own release publishes and signs.
 The block takes it from `tools.Image` in the kit release `go.mod` requires,
-such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.5.0@sha256:b8145883…`.
+such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.7.0@sha256:2fdfcf40…`.
 A build against a kit whose `tools.Image` carries the `unreleased` placeholder
 tag refuses every subscribe.
 
@@ -304,7 +307,7 @@ shellcheck scripts/*.sh
 |---|---|
 | `subscribe_test.go` | A node in each of the three locations on one network, a load balancer pair in each at its fixed addresses, one public address per location, no node with user data, only the gateway with a public address, every refusal, the builder's metrics in the build progress and the `image-build-failed` refusal, and the cluster's enrolment outputs while it waits on its nodes' report |
 | `redrive_test.go` | One subscribe reaching all three nodes through the platform's re-drives, validate asking for one exactly when a subscribe has a step to take, at most one Hetzner action waited and one node created per call, and a doubled re-drive making nothing twice |
-| `userdata_test.go` | The builder's embedded configuration with every API address in its certificates and the cluster's components, its user data within Hetzner's limit, and the gateway's two cloud-config parts, mirror and served manifests |
+| `userdata_test.go` | The builder's embedded configuration with every API address in its certificates and the cluster's components, its user data within Hetzner's limit, the gateway's two cloud-config parts, mirror and served manifests, the node report's `checks` member, and a default cluster's components, mirror and configuration documents against `testdata/default-cluster.golden` |
 | `scripts_test.go` | The build, the first-node bootstrap and the cluster's credential calls |
 | `teardown_test.go` | Unsubscribe deletes every resource, the snapshot included |
 | `declared_resources_test.go`, `secrets_leak_test.go` | The operator kit's block guards and that no token reaches an answer or the logs |
