@@ -84,12 +84,12 @@ stage() {
 overwrite_disk() {
   local staged=$1 image=$2 disk=$3 proc=$4
   exec > /dev/null 2>&1
-  printf 'diag: final stage started\n' > /dev/kmsg
+  printf '<3>diag: final stage started\n' > /dev/kmsg
   "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/zstd" -dc "$image" |
     "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/dd" of="$disk" bs=4M oflag=direct conv=fsync status=none
-  printf 'diag: dd finished, writing o\n' > /dev/kmsg
+  printf '<3>diag: dd finished, writing o\n' > /dev/kmsg
   printf o > "$proc/sysrq-trigger"
-  printf 'diag: o written\n' > /dev/kmsg
+  printf '<3>diag: o written\n' > /dev/kmsg
 }
 
 # write_disk freezes the root filesystem, which flushes the removed out, then execs the final stage from the tmpfs in
@@ -107,7 +107,7 @@ write_disk() {
   done
   printf '%s\n' "set -euo pipefail" "$(declare -f overwrite_disk)" "overwrite_disk \"\$@\"" > "$staged/overwrite-disk"
   echo "build-image: writing the image to $disk and powering off"
-  printf 'diag: freezing / on %s vCPUs, %s\n' "$(nproc)" "$(grep MemTotal /proc/meminfo)" > /dev/kmsg
+  printf '<3>diag: freezing / on %s vCPUs, %s\n' "$(nproc)" "$(grep MemTotal /proc/meminfo)" > /dev/kmsg
   fsfreeze -f /
   LC_ALL=C exec "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/bash" "$staged/overwrite-disk" \
     "$staged" "$work/image.raw.zst" "$disk" "$proc"
@@ -132,18 +132,18 @@ diag_netconsole() {
   printf 6666 > "$target/remote_port"
   printf '%s' "$mac" > "$target/remote_mac"
   printf 1 > "$target/enabled"
-  printf 'diag: netconsole on %s via %s mac %s, kernel %s\n' "$dev" "$via" "$mac" "$(uname -r)" > /dev/kmsg
+  printf '<3>diag: netconsole on %s via %s mac %s, kernel %s\n' "$dev" "$via" "$mac" "$(uname -r)" > /dev/kmsg
 }
 
 main() {
   [ "$#" -eq 3 ] || fail "usage: build-image.sh <imager image> <machine configuration> <network router>"
   route_through_gateway "$3"
   diag_netconsole || echo "build-image: diag netconsole failed" >&2
-  printf 'diag: pulling imager\n' > /dev/kmsg
+  printf '<3>diag: pulling imager\n' > /dev/kmsg
   pull_imager "$1"
-  printf 'diag: imager pulled, building\n' > /dev/kmsg
+  printf '<3>diag: imager pulled, building\n' > /dev/kmsg
   build "$1" "$2"
-  printf 'diag: image built, %s\n' "$(ls -l "$out")" > /dev/kmsg
+  printf '<3>diag: image built, %s\n' "$(ls -l "$out")" > /dev/kmsg
   write_disk
 }
 
