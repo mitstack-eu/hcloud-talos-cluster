@@ -384,7 +384,6 @@ func TestCluster_KeepsEachClaimOnItsNodesUserVolumeThroughTheLocalPathProvisione
 	assert.Subset(t, mirroredImageNames(t, kit), []string{"docker.io/rancher/local-path-provisioner", "docker.io/library/busybox"}, "the provisioner's and its helper's images")
 }
 
-// mirroredImageNames returns the name of each image the gateway's mirror holds.
 func mirroredImageNames(t *testing.T, kit renderedCloudConfig) []string {
 	t.Helper()
 	var names []string
