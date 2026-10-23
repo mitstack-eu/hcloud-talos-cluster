@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mitstack-eu/operator-kit/v3/contract"
+	"github.com/mitstack-eu/operator-kit/v3/handler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,6 +54,21 @@ func TestSubscribe_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetworkWhateverLocatio
 			assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "a builder outlived its snapshot")
 		})
 	}
+}
+
+func TestSubscribe_BuildsTheBuilderAndANodeInEachLocationOnCpx32WhenItIsSent(t *testing.T) {
+	e := newEnv(t, withParam("serverType", "cpx32"))
+
+	obs := e.subscribe()
+
+	require.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
+	typeByLocation := map[string]string{}
+	for _, node := range e.hetzner.byRole(t, roleNode) {
+		typeByLocation[node.Location] = node.ServerType
+	}
+	assert.Equal(t, map[string]string{"fsn1": "cpx32", "nbg1": "cpx32", "hel1": "cpx32"}, typeByLocation,
+		"each location's node server type")
+	assert.Equal(t, "cpx32", e.hetzner.specFor(t, roleBuilder).ServerType, "the builder's server type")
 }
 
 func TestSubscribe_EveryNodeBootsFromTheClustersOwnSnapshot(t *testing.T) {
@@ -379,6 +395,25 @@ func TestSubscribe_RefusesBeforeAnyChange(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.want)
 			assert.Zero(t, e.hetzner.count(), "Hetzner resources after the refusal")
 			assert.False(t, e.github.exists(e.repo()), "the repository after the refusal")
+		})
+	}
+}
+
+func TestSubscribe_RefusesAServerTypeTheBlockDoesNotListAsAnInvalidParam(t *testing.T) {
+	cases := []struct{ name, serverType string }{
+		{name: "an x86 type Hetzner sells that the block does not list is refused", serverType: "cpx42"},
+		{name: "an Arm type the amd64 image cannot boot is refused", serverType: "cax21"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, withParam("serverType", tc.serverType))
+
+			err := e.ensure()
+
+			var refused *handler.Refused
+			require.ErrorAs(t, err, &refused)
+			assert.Equal(t, "invalid-param", refused.Class, "serverType %q refused as %q; want invalid-param", tc.serverType, refused.Class)
+			assert.Zero(t, e.hetzner.count(), "Hetzner resources after the refusal")
 		})
 	}
 }

@@ -22,16 +22,13 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.6.0
-  releaseClass: feature
+  version: 0.6.1
+  releaseClass: correctness-fix
   releaseNote: >-
-    One API and one ingress load balancer in fsn1, the gateway's location,
-    serve the three nodes by private IP, in place of a pair in each
-    location, so a cluster needs two load balancers and fits the Hetzner
-    project's limit. publicIpByLocation carries fsn1 alone. The release is
-    0.6.0, a feature and so a minor raise, as 0.4.0 was for the three
-    locations, because the declared resources change. It carries no upgrade
-    from a cluster with a pair in each location.
+    The serverType param accepts cpx32, a shared x86 type with 4 vCPU, 8 GB
+    of RAM and 160 GB of disk, so a cluster's three nodes take a third of
+    the Hetzner project's shared vCPU that three cpx52 nodes take. A type
+    the block does not list is still refused.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
     control-plane node in each of fsn1, nbg1 and hel1 behind an API and an

@@ -83,7 +83,7 @@ const (
 
 // allowedServerTypes are x86, since the image is amd64, hold a control plane with Cilium and Argo CD, and are each one
 // the platform's hetzner.server type allows.
-var allowedServerTypes = []string{"cx23", "cx33", "cx43", "cx53", "cpx52", "cpx62"}
+var allowedServerTypes = []string{"cx23", "cx33", "cx43", "cx53", "cpx32", "cpx52", "cpx62"}
 
 type clusterParams struct {
 	appName, serverType string
