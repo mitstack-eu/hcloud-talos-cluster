@@ -59,16 +59,15 @@ func TestManifest_ProvidesTheKubernetesClusterType(t *testing.T) {
 	}
 }
 
-func TestManifest_DeclaresANodeAndAPublicAndAPrivateLoadBalancerInEachLocation(t *testing.T) {
+func TestManifest_DeclaresANodeInEachLocationAndOneAPIAndOneIngressLoadBalancerInFsn1(t *testing.T) {
 	want := map[string]string{
 		"hetzner.network": "hetzner.network", "hetzner.firewall": "hetzner.firewall", "gateway": "hetzner.server",
+		"api-load-balancer-fsn1": "hetzner.load-balancer", "ingress-load-balancer-fsn1": "hetzner.load-balancer",
 		"github.repository": "github.gitops-repository", "github.gitops-commit": "github.gitops-commit",
 		"hetzner.kubernetes-cluster": "hetzner.kubernetes-cluster",
 	}
 	for _, location := range clusterLocationNames {
 		want["node-"+location] = "hetzner.server"
-		want["api-load-balancer-"+location] = "hetzner.load-balancer"
-		want["ingress-load-balancer-"+location] = "hetzner.load-balancer"
 	}
 
 	declared := parseManifest(t).declaredTypes()

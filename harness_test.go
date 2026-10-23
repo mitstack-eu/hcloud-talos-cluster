@@ -449,18 +449,13 @@ func (f *fakeHetzner) AddLoadBalancerTarget(_ context.Context, id int64, labelSe
 // clusterLocationNames are Hetzner Cloud's three European locations, each of which holds one node of every cluster.
 var clusterLocationNames = []string{"fsn1", "nbg1", "hel1"}
 
-// lbsByLocation returns the load balancers carrying role r by location, failing unless each location holds exactly one.
-func (f *fakeHetzner) lbsByLocation(t *testing.T, r role) map[string]hcLoadBalancer {
+// loadBalancer returns the one load balancer carrying role r, failing unless exactly one does.
+func (f *fakeHetzner) loadBalancer(t *testing.T, r role) hcLoadBalancer {
 	t.Helper()
 	lbs, err := f.ListLoadBalancers(context.Background(), roleSelector(testSub, r))
 	require.NoError(t, err)
-	byLocation := map[string]hcLoadBalancer{}
-	for _, lb := range lbs {
-		byLocation[lb.Location] = lb
-	}
-	require.Len(t, lbs, len(clusterLocationNames), "%s load balancers", r)
-	require.ElementsMatch(t, clusterLocationNames, slices.Collect(maps.Keys(byLocation)), "the %s load balancers' locations", r)
-	return byLocation
+	require.Len(t, lbs, 1, "%s load balancers", r)
+	return lbs[0]
 }
 
 func (f *fakeHetzner) DeleteLoadBalancer(_ context.Context, id int64) error {

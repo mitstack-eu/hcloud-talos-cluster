@@ -1,7 +1,7 @@
 package main
 
-// Subscribe builds a three-node Talos cluster a step a call: the load balancers of each location, gateway and builder,
-// then the snapshot, then one node in each of fsn1, nbg1 and hel1 booted from it.
+// Subscribe builds a three-node Talos cluster a step a call: the API and ingress load balancers in fsn1, gateway and
+// builder, then the snapshot, then one node in each of fsn1, nbg1 and hel1 booted from it.
 
 import (
 	"encoding/json"
@@ -55,23 +55,6 @@ func TestSubscribe_BuildsANodeInEachOfFsn1Nbg1AndHel1OnOneNetworkWhateverLocatio
 	}
 }
 
-func TestSubscribe_PublishesThePublicAddressOfEachLocationsIngressLoadBalancer(t *testing.T) {
-	e := newEnv(t)
-
-	obs := e.subscribe()
-
-	require.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
-	want := map[string]string{}
-	for location, lb := range e.hetzner.lbsByLocation(t, roleIngress) {
-		require.NotEmpty(t, lb.PublicIPv4, "the %s ingress load balancer's public address", location)
-		want[location] = lb.PublicIPv4
-	}
-	var byLocation map[string]string
-	require.NoError(t, json.Unmarshal([]byte(obs.Outputs["publicIpByLocation"]), &byLocation))
-	assert.Equal(t, want, byLocation, "publicIpByLocation")
-	assert.Equal(t, "https://10.0.0.3:6443", obs.Outputs["privateEndpoint"], "the private endpoint is fsn1's API load balancer")
-}
-
 func TestSubscribe_EveryNodeBootsFromTheClustersOwnSnapshot(t *testing.T) {
 	e := newEnv(t)
 
@@ -113,10 +96,9 @@ func TestSubscribe_NoNodeCarriesUserDataAndOnlyTheGatewayHoldsAPublicAddress(t *
 		assert.Equal(t, []int64{firewalls[0].ID}, spec.FirewallIDs, "server %s's firewalls", spec.Name)
 	}
 	for _, r := range []role{roleAPI, roleIngress} {
-		for _, lb := range e.hetzner.lbsByLocation(t, r) {
-			wantPublic := r == roleIngress
-			assert.Equal(t, wantPublic, lb.PublicInterface, "load balancer %s's public interface = %v; want %v", lb.Name, lb.PublicInterface, wantPublic)
-		}
+		lb := e.hetzner.loadBalancer(t, r)
+		wantPublic := r == roleIngress
+		assert.Equal(t, wantPublic, lb.PublicInterface, "load balancer %s's public interface = %v; want %v", lb.Name, lb.PublicInterface, wantPublic)
 	}
 }
 
@@ -253,46 +235,44 @@ func TestSubscribe_AFailedMetricsReadStillRefusesTheBuildAndSaysSo(t *testing.T)
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder past its deadline")
 }
 
-func TestSubscribe_EachLocationHoldsAPublicAndAPrivateLoadBalancerThatFindEveryNodeByLabel(t *testing.T) {
+func TestSubscribe_ServesTheThreeLocationsNodesThroughOneAPIAndOneIngressLoadBalancerInFsn1(t *testing.T) {
 	e := newEnv(t)
 
-	e.subscribe()
+	obs := e.subscribe()
 
-	want := map[role][]lbService{
-		roleAPI: {{ListenPort: 6443, DestinationPort: 6443}},
-		roleIngress: {
-			{ListenPort: 80, DestinationPort: 30080, ProxyProtocol: true},
-			{ListenPort: 443, DestinationPort: 30081, ProxyProtocol: true},
-		},
-	}
-	require.Len(t, e.hetzner.lbSpecs, 6, "load balancer creates")
-	for _, r := range []role{roleAPI, roleIngress} {
-		for location, lb := range e.hetzner.lbsByLocation(t, r) {
-			assert.Equal(t, want[r], lb.Services, "the %s %s load balancer's services", location, r)
-			assert.Equal(t, []string{roleSelector(testSub, roleNode)}, lb.TargetSelectors, "the %s %s load balancer's targets", location, r)
-		}
-	}
-}
-
-func TestSubscribe_TheLoadBalancersJoinTheNetworkAtTheirLocationsAddressesApartFromTheGateways(t *testing.T) {
-	e := newEnv(t)
-
-	require.NoError(t, e.converge())
-
+	require.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
 	networks, err := e.hetzner.ListNetworks(e.ctx(), subscriptionSelector(testSub))
 	require.NoError(t, err)
-	require.Len(t, networks, 1)
-	want := map[role]map[string]string{
-		roleAPI:     {"fsn1": "10.0.0.3", "nbg1": "10.0.0.5", "hel1": "10.0.0.7"},
-		roleIngress: {"fsn1": "10.0.0.4", "nbg1": "10.0.0.6", "hel1": "10.0.0.8"},
+	require.Len(t, networks, 1, "networks")
+	want := map[role]struct {
+		address  string
+		services []lbService
+	}{
+		roleAPI: {address: "10.0.0.3", services: []lbService{{ListenPort: 6443, DestinationPort: 6443}}},
+		roleIngress: {address: "10.0.0.4", services: []lbService{
+			{ListenPort: 80, DestinationPort: 30080, ProxyProtocol: true},
+			{ListenPort: 443, DestinationPort: 30081, ProxyProtocol: true},
+		}},
 	}
-	for r, byLocation := range want {
-		lbs := e.hetzner.lbsByLocation(t, r)
-		for location, address := range byLocation {
-			assert.Equal(t, map[int64]string{networks[0].ID: address}, lbs[location].PrivateIPs, "the %s %s load balancer's address", location, r)
-		}
+	assert.Len(t, e.hetzner.lbSpecs, 2, "load balancer creates")
+	for r, w := range want {
+		lb := e.hetzner.loadBalancer(t, r)
+		assert.Equal(t, "fsn1", lb.Location, "the %s load balancer's location", r)
+		assert.Equal(t, map[int64]string{networks[0].ID: w.address}, lb.PrivateIPs, "the %s load balancer's address", r)
+		assert.Equal(t, w.services, lb.Services, "the %s load balancer's services", r)
+		assert.Equal(t, []string{roleSelector(testSub, roleNode)}, lb.TargetSelectors, "the %s load balancer's targets", r)
 	}
-	assert.Equal(t, gatewayAddress, e.hetzner.byRole(t, roleGateway)[0].PrivateIPs[networks[0].ID], "the gateway's address")
+	var nodeLocations []string
+	for _, node := range e.hetzner.byRole(t, roleNode) {
+		nodeLocations = append(nodeLocations, node.Location)
+	}
+	assert.ElementsMatch(t, clusterLocationNames, nodeLocations, "the nodes' locations")
+	ingress := e.hetzner.loadBalancer(t, roleIngress)
+	require.NotEmpty(t, ingress.PublicIPv4, "the ingress load balancer's public address")
+	var byLocation map[string]string
+	require.NoError(t, json.Unmarshal([]byte(obs.Outputs["publicIpByLocation"]), &byLocation))
+	assert.Equal(t, map[string]string{"fsn1": ingress.PublicIPv4}, byLocation, "publicIpByLocation")
+	assert.Equal(t, "https://10.0.0.3:6443", obs.Outputs["privateEndpoint"], "the private endpoint is the API load balancer")
 }
 
 func TestSubscribe_ALoadBalancerStepThatFailedIsTakenUpByTheNextEnsureWithoutADuplicate(t *testing.T) {
@@ -306,12 +286,11 @@ func TestSubscribe_ALoadBalancerStepThatFailedIsTakenUpByTheNextEnsureWithoutADu
 			require.NoError(t, e.converge())
 
 			for _, r := range []role{roleAPI, roleIngress} {
-				for location, lb := range e.hetzner.lbsByLocation(t, r) {
-					assert.Len(t, lb.PrivateIPs, 1, "the %s %s load balancer's networks", location, r)
-					assert.Equal(t, r == roleIngress, lb.PublicInterface, "the %s %s load balancer's public interface", location, r)
-					assert.Len(t, lb.Services, map[role]int{roleAPI: 1, roleIngress: 2}[r], "the %s %s load balancer's services", location, r)
-					assert.Len(t, lb.TargetSelectors, 1, "the %s %s load balancer's targets", location, r)
-				}
+				lb := e.hetzner.loadBalancer(t, r)
+				assert.Len(t, lb.PrivateIPs, 1, "the %s load balancer's networks", r)
+				assert.Equal(t, r == roleIngress, lb.PublicInterface, "the %s load balancer's public interface", r)
+				assert.Len(t, lb.Services, map[role]int{roleAPI: 1, roleIngress: 2}[r], "the %s load balancer's services", r)
+				assert.Len(t, lb.TargetSelectors, 1, "the %s load balancer's targets", r)
 			}
 			assert.Len(t, e.hetzner.byRole(t, roleGateway), 1, "gateways after the retry")
 			assert.Len(t, e.hetzner.byRole(t, roleBuilder), 1, "builders after the retry")
@@ -442,6 +421,23 @@ func TestSubscribe_RefusesTwoNodesInOneLocationBeforeAnyChange(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ambiguous-cluster")
 	assert.Contains(t, err.Error(), "2 nbg1 node servers carry this subscription's labels")
+	assert.Equal(t, before, e.changes(), "changes after the refusal")
+}
+
+func TestSubscribe_RefusesASecondAPILoadBalancerInAnotherLocationBeforeAnyChange(t *testing.T) {
+	e := newEnv(t)
+	e.hetzner.instantBuild = true
+	require.NoError(t, e.converge())
+	extra := e.hetzner.loadBalancer(t, roleAPI)
+	extra.ID, extra.Location = e.hetzner.id(), "nbg1"
+	e.hetzner.loadBalancers[extra.ID] = &extra
+	before := e.changes()
+
+	err := e.ensure()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ambiguous-cluster")
+	assert.Contains(t, err.Error(), "2 api load balancers carry this subscription's labels")
 	assert.Equal(t, before, e.changes(), "changes after the refusal")
 }
 
