@@ -469,18 +469,39 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 }
 
 func TestBuilder_TheNodeReportDeclaresItsContractAndCarriesNoneOfTheVerdictsChecks(t *testing.T) {
-	e := subscribedOnce(t)
-	cronJobs := testutil.Kind(inlineManifests(t, builderConfiguration(t, e))["mitstack-node-report"], "CronJob")
-	require.Len(t, cronJobs, 1, "node report CronJobs")
-	script := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command", "2").(string)
-
-	posted := runNodeReport(t, script)
+	posted := runNodeReport(t, nodeReportScript(t))
 
 	assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted["checks"], "the node report's checks member")
 }
 
+func TestBuilder_TheNodeReportPostsAnErrorNamingTheReadThatFailed(t *testing.T) {
+	posted, out, err := postNodeReport(t, nodeReportScript(t), `[ "$*" != "get nodes -o json" ] || { echo 'error: forbidden' >&2; exit 1; }; echo '{"items": []}'`)
+
+	require.Error(t, err, "the node report exits non-zero once it has posted the error")
+	require.NotNil(t, posted, "the node report posted nothing: %s", out)
+	assert.Equal(t, map[string]any{"read": "kubectl get nodes", "exitStatus": float64(1), "stderr": "error: forbidden\n"}, posted["error"])
+}
+
+// nodeReportScript returns the script the builder's node report CronJob runs.
+func nodeReportScript(t *testing.T) string {
+	t.Helper()
+	cronJobs := testutil.Kind(inlineManifests(t, builderConfiguration(t, subscribedOnce(t)))["mitstack-node-report"], "CronJob")
+	require.Len(t, cronJobs, 1, "node report CronJobs")
+	return testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command", "2").(string)
+}
+
 // runNodeReport runs script against a cluster with no objects and returns the body the platform received.
 func runNodeReport(t *testing.T, script string) map[string]any {
+	t.Helper()
+	posted, out, err := postNodeReport(t, script, `echo '{"items": []}'`)
+
+	require.NoError(t, err, out)
+	require.NotNil(t, posted, "the node report posted nothing: %s", out)
+	return posted
+}
+
+// postNodeReport runs script with the given kubectl stub and returns the body the platform received, or nil.
+func postNodeReport(t *testing.T, script, kubectl string) (map[string]any, string, error) {
 	t.Helper()
 	posted := make(chan map[string]any, 1)
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -498,20 +519,18 @@ func runNodeReport(t *testing.T, script string) map[string]any {
 	require.NoError(t, os.WriteFile(ca, certPEM(srv), 0o644))
 	require.NoError(t, os.WriteFile(token, []byte("report-token"), 0o600))
 	tools := testutil.NewTools(t, map[string]string{
-		"kubectl":  `echo '{"items": []}'`,
+		"kubectl":  kubectl,
 		"talosctl": `echo 'NODE ID HOSTNAME PEER-URLS CLIENT-URLS LEARNER'`,
 	})
 
 	out, err := testutil.RunBash(t, script, tools.Env("REPORT_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "HOST_IP=10.0.0.3",
 		"REPORT_TOKEN_FILE="+token, "CURL_CA_BUNDLE="+ca))
 
-	require.NoError(t, err, out)
 	select {
 	case body := <-posted:
-		return body
+		return body, out, err
 	default:
-		require.FailNow(t, "the node report posted nothing", out)
-		return nil
+		return nil, out, err
 	}
 }
 
