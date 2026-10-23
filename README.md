@@ -9,8 +9,8 @@ mitstack is a platform that runs ready-made services, called blocks, for your
 apps. [The glossary](https://github.com/mitstack-eu/mitstack-workspace/blob/main/docs/glossary.md) defines its other words.
 
 ```mermaid
-flowchart LR
-    app["Your app in mitstack"] --> block["hcloud-talos-cluster"]
+flowchart TD
+    app["Your app in mitstack"] -- "subscribes" --> block["hcloud-talos-cluster"]
     block -- "creates" --> repo["GitHub repo<br/>#lt;appName#gt;-cluster"]
     block -- "creates" --> hetzner
     subgraph hetzner["Hetzner Cloud"]
@@ -45,7 +45,8 @@ block. [Params, connections and outputs](docs/reference.md) has every table.
 1. In the mitstack console's [Capabilities page](https://api.mitstack.dev/capabilities),
    connect GitHub, and Hetzner with a Cloud project's read and write API token.
 2. Subscribe your app to this block, and fill in `appName`.
-3. Once the cluster is ready, in up to 45 minutes, commit to the repo's `cluster/`.
+3. Once the console shows the subscription ready, in up to 45 minutes, commit
+   your Kubernetes manifests to the repo's `cluster/` folder.
 
 ## How it works
 
@@ -75,7 +76,7 @@ sequenceDiagram
     H-->>O: Builder wrote the image and is off
     O->>H: Snapshot its disk, delete the builder
     O->>H: Create a node in fsn1, nbg1, hel1
-    H->>C: Gateway starts etcd on one node
+    H->>C: Gateway server starts etcd on a node
     C->>M: Enrol once, receive tokens
     C->>G: Argo CD reads the repo
     C->>M: Node report every 5 minutes
