@@ -502,10 +502,18 @@ const recordedToolsImage = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:recorded
 
 func TestCluster_RendersTheRecordedComponentsMirrorAndBuilderApartFromTheNodeReport(t *testing.T) {
 	swap(t, &toolsImage, func() string { return recordedToolsImage })
+
+	got := defaultClusterRecord(t)
+
+	testutil.Golden(t, "testdata/default-cluster.golden", got)
+}
+
+// defaultClusterRecord lists the component set, the gateway's mirror and the builder's cloud-config and documents, one per line.
+func defaultClusterRecord(t *testing.T) []byte {
+	t.Helper()
 	set, err := clusterComponents(manifestInputs{subID: testSub, repoURL: "https://github.com/" + testOwner + "/shop-cluster", enrolmentToken: "enrolment-token"})
 	require.NoError(t, err)
 	e := subscribedOnce(t)
-
 	var out strings.Builder
 	record := func(fields ...string) {
 		out.WriteString(strings.Join(slices.DeleteFunc(fields, func(f string) bool { return f == "" }), " ") + "\n")
@@ -538,6 +546,5 @@ func TestCluster_RendersTheRecordedComponentsMirrorAndBuilderApartFromTheNodeRep
 		name, _ := doc["name"].(string)
 		record("document", cmp.Or(kind, version), name)
 	}
-
-	testutil.Golden(t, "testdata/default-cluster.golden", []byte(out.String()))
+	return []byte(out.String())
 }
