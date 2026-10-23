@@ -516,13 +516,15 @@ func TestBuilder_TheNodeReportNamesEachKindItReadWholeAndMayReadNoSecret(t *test
 
 	assert.IsType(t, "", posted["madeAt"], "the node report's madeAt")
 	assert.Equal(t, []any{}, posted["subscriptionResources"], "a cluster with no labelled objects lists none")
-	kinds, _ := posted["subscriptionResourceKinds"].([]any)
-	assert.Subset(t, kinds, []any{"namespace", "deployment.apps", "appproject.argoproj.io", "externalsecret.external-secrets.io"},
-		"the kinds the node report read whole")
+	assert.Equal(t, []any{"namespace", "serviceaccount", "service", "resourcequota", "limitrange", "deployment.apps",
+		"ingress.networking.k8s.io", "networkpolicy.networking.k8s.io", "role.rbac.authorization.k8s.io",
+		"rolebinding.rbac.authorization.k8s.io", "application.argoproj.io", "appproject.argoproj.io",
+		"externalsecret.external-secrets.io"}, posted["subscriptionResourceKinds"], "the kinds the node report read whole")
 	assert.NotContains(t, posted, "subscriptionResourcesComplete")
 	require.Len(t, roles, 1, "the node report's ClusterRoles")
 	for _, rule := range testutil.Field(t, roles[0], "rules").([]any) {
 		assert.NotContains(t, testutil.Field(t, rule, "resources"), "secrets", "rule %v grants a verb on secrets", rule)
+		assert.NotContains(t, testutil.Field(t, rule, "resources"), "*", "rule %v grants a verb on every resource", rule)
 	}
 }
 
@@ -539,7 +541,10 @@ func TestBuilder_EveryNodeEncryptsStateAndEphemeralUnderItsNodeIDKeyAndTheReport
 		"STATE":     map[string]any{"provider": "luks2", "keys": []any{map[string]any{"slot": 0, "nodeID": map[string]any{}}}},
 		"EPHEMERAL": map[string]any{"provider": "luks2", "keys": []any{map[string]any{"slot": 0, "nodeID": map[string]any{}, "lockToState": true}}},
 	}, volumes, "the encryption of each system volume in the image's configuration")
-	assert.Contains(t, posted, "systemVolumes", "the node report names each node's volume encryption")
+	assert.Equal(t, []any{
+		map[string]any{"node": "10.0.0.3", "name": "STATE", "phase": "ready", "encryptionProvider": "luks2", "encryptionKeys": []any{"nodeID"}, "lockedToState": false},
+		map[string]any{"node": "10.0.0.3", "name": "EPHEMERAL", "phase": "ready", "encryptionProvider": "luks2", "encryptionKeys": []any{"nodeID"}, "lockedToState": true},
+	}, posted["systemVolumes"], "the node report names each node's volume encryption")
 }
 
 // nodeReportScript returns the script the builder's node report CronJob runs.
@@ -579,8 +584,9 @@ func postNodeReport(t *testing.T, script, kubectl string) (map[string]any, strin
 	require.NoError(t, os.WriteFile(ca, certPEM(srv), 0o644))
 	require.NoError(t, os.WriteFile(token, []byte("report-token"), 0o600))
 	tools := testutil.NewTools(t, map[string]string{
-		"kubectl":  kubectl,
-		"talosctl": `echo 'NODE ID HOSTNAME PEER-URLS CLIENT-URLS LEARNER'`,
+		"kubectl": kubectl,
+		"talosctl": `case "$*" in *"get volumestatus -o json") cat testdata/volume-statuses.json ;;
+*) echo 'NODE ID HOSTNAME PEER-URLS CLIENT-URLS LEARNER' ;; esac`,
 	})
 
 	out, err := testutil.RunBash(t, script, tools.Env("REPORT_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "HOST_IP=10.0.0.3",
