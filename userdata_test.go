@@ -4,15 +4,22 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"net/mail"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -441,4 +448,96 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "over Hetzner's 32768")
+}
+
+func TestBuilder_TheNodeReportDeclaresItsContractAndCarriesNoneOfTheVerdictsChecks(t *testing.T) {
+	e := subscribedOnce(t)
+	cronJobs := testutil.Kind(inlineManifests(t, builderConfiguration(t, e))["mitstack-node-report"], "CronJob")
+	require.Len(t, cronJobs, 1, "node report CronJobs")
+	script := testutil.Field(t, cronJobs[0], "spec", "jobTemplate", "spec", "template", "spec", "containers", "0", "command", "2").(string)
+
+	posted := runNodeReport(t, script)
+
+	assert.Equal(t, map[string]any{"contract": "node-report/v1", "names": []any{}}, posted["checks"], "the node report's checks member")
+}
+
+// runNodeReport runs script against a cluster with no objects and returns the body the platform received.
+func runNodeReport(t *testing.T, script string) map[string]any {
+	t.Helper()
+	posted := make(chan map[string]any, 1)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		posted <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	ca, token := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(ca, certPEM(srv), 0o644))
+	require.NoError(t, os.WriteFile(token, []byte("report-token"), 0o600))
+	tools := testutil.NewTools(t, map[string]string{
+		"kubectl":  `echo '{"items": []}'`,
+		"talosctl": `echo 'NODE ID HOSTNAME PEER-URLS CLIENT-URLS LEARNER'`,
+	})
+
+	out, err := testutil.RunBash(t, script, tools.Env("REPORT_URL="+srv.URL, "SUBSCRIPTION_ID="+testSub, "HOST_IP=10.0.0.3",
+		"REPORT_TOKEN_FILE="+token, "CURL_CA_BUNDLE="+ca))
+
+	require.NoError(t, err, out)
+	select {
+	case body := <-posted:
+		return body
+	default:
+		require.FailNow(t, "the node report posted nothing", out)
+		return nil
+	}
+}
+
+// recordedToolsImage stands in for tools.Image, which every kit release pins anew.
+const recordedToolsImage = "ghcr.io/mitstack-eu/talos-cluster-kit-tools:recorded@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+func TestCluster_RendersTheRecordedComponentsMirrorAndBuilderApartFromTheNodeReport(t *testing.T) {
+	swap(t, &toolsImage, func() string { return recordedToolsImage })
+	set, err := clusterComponents(manifestInputs{subID: testSub, repoURL: "https://github.com/" + testOwner + "/shop-cluster", enrolmentToken: "enrolment-token"})
+	require.NoError(t, err)
+	e := subscribedOnce(t)
+
+	var out strings.Builder
+	record := func(fields ...string) {
+		out.WriteString(strings.Join(slices.DeleteFunc(fields, func(f string) bool { return f == "" }), " ") + "\n")
+	}
+	record("versions", set.Versions.Talos, set.Versions.Kubernetes)
+	for _, m := range set.Served {
+		record("served", m.Name, m.Path, m.SHA256())
+	}
+	for _, m := range set.Inline {
+		digest := m.SHA256()
+		if m.Name == "mitstack-node-report" {
+			digest = "unrecorded"
+		}
+		record("inline", m.Name, m.Path, digest)
+	}
+	gw := decodeCloudConfig(t, gatewayParts(t, e.hetzner.userData[e.hetzner.byRole(t, roleGateway)[0].ID])[0])
+	for _, ref := range strings.Fields(gw.file(t, "/etc/mitstack-gateway/images.txt").Content) {
+		record("mirror", ref)
+	}
+	builder := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID])
+	for _, f := range builder.WriteFiles {
+		record("builder-file", f.Path, f.Permissions, f.Encoding)
+	}
+	for _, cmd := range builder.RunCmd {
+		record(append([]string{"builder-run"}, cmd...)...)
+	}
+	for _, doc := range builderConfiguration(t, e) {
+		kind, _ := doc["kind"].(string)
+		version, _ := doc["version"].(string)
+		name, _ := doc["name"].(string)
+		record("document", cmp.Or(kind, version), name)
+	}
+
+	testutil.Golden(t, "testdata/default-cluster.golden", []byte(out.String()))
 }
