@@ -8,6 +8,7 @@ import (
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -19,11 +20,15 @@ const (
 	keySubscription    = "mitstack.dev/subscription"
 	keyRole            = "mitstack.dev/role"
 	keyEnrolmentSHA256 = "mitstack.dev/enrolment-sha256"
+	keyIssuerBucket    = "mitstack.dev/issuer-bucket"
 
 	// maxNameLength is the longest hostname label, which a Hetzner server name must be.
-	maxNameLength       = 63
-	nameSuffixLength    = 8
-	enrolmentTokenBytes = 32
+	maxNameLength           = 63
+	nameSuffixLength        = 8
+	enrolmentTokenBytes     = 32
+	issuerBucketPrefix      = "mitstack-oidc-"
+	issuerBucketRandomBytes = 16
+	issuerRegion            = "eu-central-1"
 )
 
 // role names what a labelled resource is to the cluster, since several share a Hetzner kind.
@@ -109,4 +114,18 @@ func mintEnrolmentToken() (string, error) {
 		return "", fmt.Errorf("minting the enrolment token: %w", err)
 	}
 	return hex.EncodeToString(raw), nil
+}
+
+// mintIssuerBucket takes nothing from the subscription, org or app, so the bucket name cannot be guessed.
+func mintIssuerBucket() (string, error) {
+	raw := make([]byte, issuerBucketRandomBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("minting the issuer bucket name: %w", err)
+	}
+	return issuerBucketPrefix + strings.ToLower(lowerBase32.EncodeToString(raw)), nil
+}
+
+// issuerURL is where the platform publishes the cluster's discovery document and key set, in the bucket's own host.
+func issuerURL(bucket, subscriptionID string) *url.URL {
+	return &url.URL{Scheme: "https", Host: bucket + ".s3." + issuerRegion + ".amazonaws.com", Path: "/" + subscriptionID}
 }

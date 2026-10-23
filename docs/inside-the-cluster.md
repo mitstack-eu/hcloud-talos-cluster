@@ -38,7 +38,11 @@ read of its own, which fails apart from the nodes and Applications it reads.
 Each report carries a `checks` member,
 `{"contract": "node-report/v1", "names": []}`, which names the contract the
 report follows and none of the platform verdict's checks, because none of its
-reads carries one.
+reads carries one. The report also carries the API server's key set as `jwks`,
+which talos-cluster-kit's `report/scripts/report.sh` reads. The platform
+publishes that key set under `issuerUrl`, as
+[When each output is published](reference.md#when-each-output-is-published)
+describes.
 
 ## How the components change
 

@@ -47,6 +47,8 @@ what that repository holds to the cluster. A commit to the repository's
 | `privateEndpoint` | The address of the cluster's Kubernetes API, on the cluster's private network | `https://10.0.0.3:6443` | Once the cluster is ready |
 | `publicIpByLocation` | The public address of the ingress load balancer, the one that takes web traffic from the internet on ports 80 and 443, under its location | `{"fsn1":"203.0.113.10"}` | Once the cluster is ready |
 | `subscriptionId` | The id of your app's subscription to the block | `sub_0123456789ab` | Once the cluster is ready |
+| `issuerBucket` | The name of the S3 bucket the install mints for the cluster's issuer, which [When each output is published](#when-each-output-is-published) explains | `mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle` | Once the cluster is ready |
+| `issuerUrl` | The issuer every node signs service-account tokens for | `https://<issuerBucket>.s3.eu-central-1.amazonaws.com/<subscriptionId>` | Once the cluster is ready |
 | `clusterRepoUrl` | The web address of the cluster repository | `https://github.com/acme/shop-cluster` | Once the gateway and the repository exist, before the cluster is ready |
 | `enrolmentTokenSha256` | A fingerprint of the one-time token the cluster presents when it first signs up with mitstack, called enrolment. mitstack checks the presented token against it, so it needs the fingerprint before the cluster signs up | A base32 SHA-256 digest | Once the gateway and the repository exist, before the cluster is ready |
 | `repo` | The cluster repository's owner and name, recorded on the repository resource rather than the cluster | `acme/shop-cluster` | Once the repository exists with this subscription's mark, two GitHub topics the block sets on it |
@@ -73,6 +75,27 @@ while it still reads unknown, so the platform holds them before any node enrols.
 | `privateEndpoint`, the API load balancer as `https://10.0.0.3:6443` | No | Yes |
 | `publicIpByLocation`, the ingress load balancer's public address under its location, such as `{"fsn1":"203.0.113.10"}` | No | Yes |
 | `subscriptionId` | No | Yes |
+| `issuerBucket`, the S3 bucket name the install mints for the cluster's issuer, which the paragraphs below the table explain, such as `mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle`, read from the gateway's `mitstack.dev/issuer-bucket` label | No | Yes |
+| `issuerUrl`, the issuer every node signs service-account tokens for, `https://<issuerBucket>.s3.eu-central-1.amazonaws.com/<subscriptionId>` | No | Yes |
+
+The issuer lets a pod on the cluster call AWS, such as to pull an image from
+ECR, with a short-lived service-account token in place of a stored key. Each
+token names the issuer, a public URL where AWS reads the discovery document
+that describes the issuer and the key set that checks the token's signature.
+
+`mintIssuerBucket` in `identity.go` mints the bucket name from 16 random
+bytes, and `issuerURL` puts the subscription id under the bucket's address in
+`eu-central-1`, the one region the block uses. `install` in `install.go`
+labels the gateway with the bucket in the same call that mints the cluster's
+keys. The machine configuration that the builder bakes into the nodes' image
+names `issuerUrl` as the API server's service-account issuer.
+
+The platform creates the bucket and publishes the discovery document and the
+key set in it, acting through the issuer publisher role of the org's connected
+AWS account. An org with no such connection gets no bucket and no published
+files. `clusterState.present` in `observe.go` reads the label back. A cluster
+whose gateway lost the `mitstack.dev/issuer-bucket` label, such as to an edit
+by hand, reads unknown, and its status detail names the missing label.
 
 The cluster resource carries both enrolment outputs or neither, and no other
 resource carries either. It carries neither when the request cannot name the

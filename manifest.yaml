@@ -22,14 +22,16 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.6.2
-  releaseClass: correctness-fix
+  version: 0.7.0
+  releaseClass: feature
   releaseNote: >-
-    The builder waits one second between writing the image over its disk
-    and powering off, and runs that sleep from its in-memory copies like
-    the rest of the final stage. The wait guards against a cpx32 builder
-    staying on after the power-off request, which fails the build at its
-    deadline. Whether the wait prevents that is not yet established.
+    Each new cluster gets an S3 bucket name of its own, mitstack-oidc- and
+    26 random characters. Its service-account tokens name the issuer at
+    that bucket's URL under the subscription id, which the block outputs as
+    issuerUrl, with the bucket as issuerBucket. Its node report carries the
+    API server's key set as jwks, which the platform publishes in that
+    bucket, so an AWS role can trust the cluster's workloads. The block
+    takes talos-cluster-kit v0.8.0.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
     control-plane node in each of fsn1, nbg1 and hel1 behind an API and an
