@@ -84,6 +84,10 @@ stage() {
 overwrite_disk() {
   local staged=$1 image=$2 disk=$3 proc=$4
   exec > /dev/null 2>&1
+  printf s > "$proc/sysrq-trigger"
+  printf u > "$proc/sysrq-trigger"
+  local dev mnt fs opts rest
+  until while read -r dev mnt fs opts rest; do [ "$mnt" = / ] && [ "${opts%%,*}" = ro ] && exit 0; done < "$proc/mounts"; exit 1; do :; done
   "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/zstd" -dc "$image" |
     "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/dd" of="$disk" bs=4M oflag=direct conv=fsync status=none
   printf o > "$proc/sysrq-trigger"
@@ -104,7 +108,6 @@ write_disk() {
   done
   printf '%s\n' "set -euo pipefail" "$(declare -f overwrite_disk)" "overwrite_disk \"\$@\"" > "$staged/overwrite-disk"
   echo "build-image: writing the image to $disk and powering off"
-  fsfreeze -f /
   LC_ALL=C exec "$staged/ld.so" --inhibit-cache --library-path "$staged" "$staged/bash" "$staged/overwrite-disk" \
     "$staged" "$work/image.raw.zst" "$disk" "$proc"
 }
