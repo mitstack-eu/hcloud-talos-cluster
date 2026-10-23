@@ -254,11 +254,8 @@ func (st clusterState) present(subID, repoURL string) contract.Observation {
 	outputs["privateEndpoint"] = "https://" + endpoint.PrivateIPs[network.ID] + ":" + strconv.Itoa(apiServerPort)
 	outputs["publicIpByLocation"] = string(byLocation)
 	outputs["subscriptionId"] = subID
-	// A gateway without the label belongs to a cluster whose nodes sign for no public issuer.
-	if bucket := gw.Labels[keyIssuerBucket]; bucket != "" {
-		outputs["issuerBucket"] = bucket
-		outputs["issuerUrl"] = issuerURL(bucket, subID).String()
-	}
+	outputs["issuerBucket"] = gw.Labels[keyIssuerBucket]
+	outputs["issuerUrl"] = issuerURL(gw.Labels[keyIssuerBucket], subID).String()
 	return contract.Observation{
 		State:   contract.Present,
 		Outputs: outputs,
@@ -331,6 +328,9 @@ func (st clusterState) gatewayProblems(network hcNetwork, firewall hcFirewall) [
 	}
 	if !slices.Contains(gw.FirewallIDs, firewall.ID) {
 		missing = append(missing, fmt.Sprintf("firewall %d is not applied to gateway %d", firewall.ID, gw.ID))
+	}
+	if gw.Labels[keyIssuerBucket] == "" {
+		missing = append(missing, fmt.Sprintf("gateway %d has no %s label, so the cluster names no issuer its nodes sign for", gw.ID, keyIssuerBucket))
 	}
 	return missing
 }

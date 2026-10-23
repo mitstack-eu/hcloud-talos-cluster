@@ -449,8 +449,8 @@ while it still reads unknown, so the platform holds them before any node enrols.
 | `privateEndpoint`, the API load balancer as `https://10.0.0.3:6443` | No | Yes |
 | `publicIpByLocation`, the ingress load balancer's public address under its location, such as `{"fsn1":"203.0.113.10"}` | No | Yes |
 | `subscriptionId` | No | Yes |
-| `issuerBucket`, the S3 bucket name the install mints for the cluster's issuer, such as `mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle`, read from the gateway's `mitstack.dev/issuer-bucket` label | No | Once the gateway carries that label |
-| `issuerUrl`, the issuer every node signs service-account tokens for, `https://<issuerBucket>.s3.eu-central-1.amazonaws.com/<subscriptionId>` | No | Once the gateway carries that label |
+| `issuerBucket`, the S3 bucket name the install mints for the cluster's issuer, such as `mitstack-oidc-7kq2m4xw3pa3hd6rz5tn2cjvle`, read from the gateway's `mitstack.dev/issuer-bucket` label | No | Yes |
+| `issuerUrl`, the issuer every node signs service-account tokens for, `https://<issuerBucket>.s3.eu-central-1.amazonaws.com/<subscriptionId>` | No | Yes |
 
 The issuer lets a pod on the cluster call AWS, such as to pull an image from
 ECR, with a short-lived service-account token in place of a stored key. Each
@@ -465,8 +465,8 @@ names `issuerUrl` as the API server's service-account issuer. The platform
 creates the bucket in the org's connected AWS account and publishes the
 discovery document and the key set there. `clusterState.present` in
 `observe.go` reads the label back. A cluster whose gateway carries no
-`mitstack.dev/issuer-bucket` label signs for its private endpoint and outputs
-neither value.
+`mitstack.dev/issuer-bucket` label reads unknown, and its status detail names
+the missing label.
 
 The cluster resource carries both enrolment outputs or neither, and no other
 resource carries either. It carries neither when the request cannot name the
