@@ -22,19 +22,14 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.11.0
-  releaseClass: feature
+  version: 0.11.1
+  releaseClass: correctness-fix
   releaseNote: >-
-    Each node of a new cluster encrypts its STATE and EPHEMERAL volumes
-    with LUKS2 on its first boot, under a key derived from its own UUID,
-    EPHEMERAL's also locked to a random salt on STATE, so etcd, OpenBao's
-    data and every storage claim rest encrypted. The node report names
-    each node's volume encryption, and lists every object a block labels
-    with its subscription, with the time its reads began and each object
-    type it read whole, so an object a block creates on this cluster can
-    read present and, once gone, absent. The report still may read no
-    Secret. A cluster built by an earlier release gets either only by being
-    built again. The block takes talos-cluster-kit v0.12.0.
+    A subscribe no longer fails with image-build-failed when the image
+    builder starts its build a moment before its private network address
+    arrives. The build now waits up to two minutes for that address before
+    it routes through the gateway, and fails naming the interface if none
+    arrives.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
     control-plane node in each of fsn1, nbg1 and hel1 behind an API and an
