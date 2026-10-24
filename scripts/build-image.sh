@@ -6,10 +6,12 @@
 # image starts landing, nothing it runs writes to or runs from that disk. A
 # failure in that overwrite ends it before the power-off.
 # It waits a second before the power-off: an unproven guard against cpx32 builders staying on.
+# It waits for the private interface's DHCP lease before routing, since cloud-init can start it before Hetzner's hc-net-ifup has one.
 # Usage: build-image.sh <imager image by digest> <machine configuration> <network router>
 #   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
-#   BUILD_RESOLV_CONF and BUILD_PROC default to /mnt/mitstack-build,
-#   /var/lib/mitstack-build, /dev/sda, 30, /etc/resolv.conf and /proc.
+#   BUILD_RESOLV_CONF, BUILD_PROC, BUILD_NET_CLASS and BUILD_ADDRESS_WAIT
+#   default to /mnt/mitstack-build, /var/lib/mitstack-build, /dev/sda, 30,
+#   /etc/resolv.conf, /proc, /sys/class/net and 120 seconds.
 # It exists because the image embeds every key of the cluster, so it is built
 # inside the cluster's own Hetzner project and imager's output, which prints
 # that configuration, is discarded. A failed step leaves the builder running,
@@ -23,12 +25,36 @@ readonly disk=${BUILD_DISK:-/dev/sda}
 readonly attempts=${BUILD_PULL_ATTEMPTS:-30}
 readonly resolv_conf=${BUILD_RESOLV_CONF:-/etc/resolv.conf}
 readonly proc=${BUILD_PROC:-/proc}
+readonly net_class=${BUILD_NET_CLASS:-/sys/class/net}
+readonly address_wait=${BUILD_ADDRESS_WAIT:-120}
 readonly staged="$work/bin"
 readonly resolvers=("185.12.64.1" "185.12.64.2")
 
 fail() {
   echo "build-image: $*" >&2
   exit 1
+}
+
+# private_interface prints the builder's one ethernet interface, its private network's, since it has no public one.
+private_interface() {
+  local links=("$net_class"/en*)
+  if [ "${#links[@]}" -ne 1 ] || [ ! -e "${links[0]}" ]; then
+    fail "found no single ethernet interface in $net_class: ${links[*]##*/}"
+  fi
+  echo "${links[0]##*/}"
+}
+
+# await_lease waits for the private interface's DHCP lease, whose address and route to the router the default route needs.
+await_lease() {
+  local router=$1 link waited
+  link=$(private_interface)
+  for ((waited = 0; waited < address_wait; waited++)); do
+    if ip -4 -o route get "$router" 2> /dev/null | grep -q " dev $link "; then
+      return 0
+    fi
+    sleep 1
+  done
+  fail "the private interface $link has no IPv4 address routing to $router after $address_wait seconds"
 }
 
 # route_through_gateway sends the builder's traffic to the network's router, which forwards it to the gateway.
@@ -113,6 +139,7 @@ write_disk() {
 
 main() {
   [ "$#" -eq 3 ] || fail "usage: build-image.sh <imager image> <machine configuration> <network router>"
+  await_lease "$3"
   route_through_gateway "$3"
   pull_imager "$1"
   build "$1" "$2"
