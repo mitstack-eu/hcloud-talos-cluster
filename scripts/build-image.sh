@@ -6,9 +6,7 @@
 # image starts landing, nothing it runs writes to or runs from that disk. A
 # failure in that overwrite ends it before the power-off.
 # It waits a second before the power-off: an unproven guard against cpx32 builders staying on.
-# Before routing it waits for the private interface's DHCP lease, which Hetzner's
-# hc-net-ifup unit takes while cloud-init starts this script, since both wait
-# for network-online.target.
+# It waits for the private interface's DHCP lease before routing, since cloud-init can start it before Hetzner's hc-net-ifup has one.
 # Usage: build-image.sh <imager image by digest> <machine configuration> <network router>
 #   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
 #   BUILD_RESOLV_CONF, BUILD_PROC, BUILD_NET_CLASS and BUILD_ADDRESS_WAIT
