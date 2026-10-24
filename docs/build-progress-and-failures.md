@@ -34,6 +34,8 @@ builder in the proof project read 118.7% while imager ran.
 A builder still running 30 minutes after its creation has failed, since its
 script leaves a failed build running. A failed `zstd` or `dd` after the freeze
 ends the script before the power-off, so it also leaves the builder running.
+So does a private interface that gets no address within two minutes, and the
+script's last line in the builder's cloud-init output names that interface.
 Validate then asks for a re-drive, and that subscribe deletes the builder and
 refuses with `image-build-failed`.
 
