@@ -235,6 +235,26 @@ func TestBuildImage_APrivateInterfaceWithNoAddressFailsTheBuildNamingIt(t *testi
 	assert.NoFileExists(t, filepath.Join(run.dir, "proc", "sysrq-trigger"), "the builder powered off")
 }
 
+func TestBuildImage_ABuilderWithoutExactlyOneEthernetInterfaceFailsBeforeRouting(t *testing.T) {
+	for name, links := range map[string][]string{"none": {"lo"}, "two": {testPrivateInterface, "enp8s0"}} {
+		t.Run(name, func(t *testing.T) {
+			netClass := t.TempDir()
+			for _, link := range links {
+				require.NoError(t, os.MkdirAll(filepath.Join(netClass, link), 0o755))
+			}
+
+			run := runBuild(t, 0, "BUILD_NET_CLASS="+netClass)
+
+			require.Error(t, run.err, run.out)
+			assert.Contains(t, run.out, netClass, "the failure does not name where it looked for the interface")
+			calls := run.tools.Calls(t)
+			assert.NotContains(t, calls, "ip route replace default via "+routerAddress, "the build routed without knowing its interface")
+			assert.False(t, slices.ContainsFunc(calls, func(call string) bool { return strings.HasPrefix(call, "docker ") }),
+				"the build went on to pull imager: %v", calls)
+		})
+	}
+}
+
 func TestBuildImage_WritesTheDiskFromATmpfsNeverFromTheDiskItOverwrites(t *testing.T) {
 	run := runBuild(t, 0)
 
