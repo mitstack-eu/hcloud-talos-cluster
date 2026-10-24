@@ -24,6 +24,9 @@ const testImager = "ghcr.io/siderolabs/imager:v1.14.4@sha256:0123456789abcdef012
 // imagerPeakBytes is the most imager v1.14.4 held in /out building an hcloud image: its whole raw disk, before compressing it.
 const imagerPeakBytes = 4426580 * 1024
 
+// testPrivateInterface is the builder's one ethernet interface, its private network's, as a cpx32 names it.
+const testPrivateInterface = "enp7s0"
+
 // fakeLoader is the dynamic loader fake ldd names for every program, and fakeLibraries the libraries it names.
 const fakeLoader = "ld-linux-x86-64.so.2"
 
@@ -31,11 +34,18 @@ var fakeLibraries = []string{"libtinfo.so.6", "liblzma.so.5", "libc.so.6"}
 
 // buildFakes stand in for the builder's commands, docker run failing as imager does when /out lies on a tmpfs smaller
 // than imagerPeakBytes, fsfreeze turning every fake left on the disk into a recorder, sleep recording what the disk and
-// the sysrq trigger held when it ran, and FAKE_FAILING naming one to fail.
+// the sysrq trigger held when it ran, ip finding no route to the router on the private interface until it has been
+// asked more than FAKE_LEASE_AFTER times, and FAKE_FAILING naming one to fail.
 func buildFakes(imagerExit int) map[string]string {
 	exit := strconv.Itoa(imagerExit)
 	return map[string]string{
-		"ip":         "",
+		"ip": `if [ "$*" = "-4 -o route get ` + routerAddress + `" ]; then
+  if [ "$(grep -c '^ip -4 -o route get ' "$(dirname "$0")/calls.log")" -le "${FAKE_LEASE_AFTER:-0}" ]; then
+    echo "RTNETLINK answers: Network is unreachable" >&2
+    exit 2
+  fi
+  echo "` + routerAddress + ` dev ` + testPrivateInterface + ` src 10.0.0.4 uid 0"
+fi`,
 		"mountpoint": "exit 1",
 		"mount":      `printf '%s %s\n' "${@: -1}" "${4#size=}" >> "$(dirname "$0")/tmpfs"`,
 		"sync":       "",
@@ -113,11 +123,15 @@ func runBuild(t *testing.T, imagerExit int, extraEnv ...string) scriptRun {
 		require.NoError(t, os.WriteFile(filepath.Join(tools.Dir, "lib", library), []byte(library), 0o644))
 	}
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "proc"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "net", testPrivateInterface), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "net", "lo"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "net", "docker0"), 0o755))
 	config := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(config, []byte("machine: {token: secret}"), 0o600))
 	env := tools.Env(append([]string{"BUILD_WORK_DIR=" + filepath.Join(dir, "work"), "BUILD_OUT_DIR=" + filepath.Join(dir, "out"),
 		"BUILD_DISK=" + filepath.Join(dir, "disk"), "BUILD_RESOLV_CONF=" + filepath.Join(dir, "resolv.conf"),
-		"BUILD_PROC=" + filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1"}, extraEnv...)...)
+		"BUILD_PROC=" + filepath.Join(dir, "proc"), "BUILD_PULL_ATTEMPTS=1", "BUILD_NET_CLASS=" + filepath.Join(dir, "net"),
+		"BUILD_ADDRESS_WAIT=5"}, extraEnv...)...)
 	out, err := testutil.RunBash(t, buildImageScript, env, testImager, config, routerAddress)
 	return scriptRun{out: out, err: err, tools: tools, dir: dir}
 }
@@ -177,9 +191,10 @@ func TestBuildImage_RoutesThroughTheGatewayBuildsWritesTheDiskAndPowersOff(t *te
 	require.NoError(t, run.err, run.out)
 	dir := run.dir
 	calls := run.tools.Calls(t)
-	require.GreaterOrEqual(t, len(calls), 4, "calls: %v", calls)
-	assert.Equal(t, "ip route replace default via "+routerAddress, calls[0])
-	assert.Equal(t, "docker pull --quiet "+testImager, calls[1])
+	route := slices.Index(calls, "ip route replace default via "+routerAddress)
+	require.GreaterOrEqual(t, route, 0, "calls: %v", calls)
+	require.Less(t, route+1, len(calls), "calls: %v", calls)
+	assert.Equal(t, "docker pull --quiet "+testImager, calls[route+1])
 	assert.Contains(t, calls, "docker run --rm --privileged -v /dev:/dev -v "+filepath.Join(dir, "work")+"/in:/in:ro -v "+
 		filepath.Join(dir, "out")+":/out "+testImager+" hcloud --arch amd64 --embedded-config-path /in/config.yaml")
 	disk, _ := os.ReadFile(filepath.Join(dir, "disk"))
@@ -190,6 +205,34 @@ func TestBuildImage_RoutesThroughTheGatewayBuildsWritesTheDiskAndPowersOff(t *te
 	assert.Equal(t, "nameserver 185.12.64.1\nnameserver 185.12.64.2\n", string(resolv))
 	assert.NoFileExists(t, filepath.Join(dir, "config.yaml"), "the configuration outlives the build")
 	assert.NotContains(t, run.out, "every key of the cluster", "imager's output reached the log")
+}
+
+func TestBuildImage_WaitsForThePrivateInterfacesLeaseBeforeRoutingThroughTheGateway(t *testing.T) {
+	run := runBuild(t, 0, "FAKE_LEASE_AFTER=3")
+
+	require.NoError(t, run.err, run.out)
+	calls := run.tools.Calls(t)
+	var asked []int
+	for i, call := range calls {
+		if call == "ip -4 -o route get "+routerAddress {
+			asked = append(asked, i)
+		}
+	}
+	route := slices.Index(calls, "ip route replace default via "+routerAddress)
+	require.Len(t, asked, 4, "the build asks for the route to the router until the lease gives one: %v", calls)
+	assert.Greater(t, route, asked[3], "the build routes through the gateway before the private interface has its lease: %v", calls)
+}
+
+func TestBuildImage_APrivateInterfaceWithNoAddressFailsTheBuildNamingIt(t *testing.T) {
+	run := runBuild(t, 0, "FAKE_LEASE_AFTER=1000")
+
+	require.Error(t, run.err, run.out)
+	assert.Contains(t, run.out, testPrivateInterface, "the failure does not name the interface that got no address")
+	calls := run.tools.Calls(t)
+	assert.NotContains(t, calls, "ip route replace default via "+routerAddress, "the build routed through a gateway it cannot reach")
+	assert.False(t, slices.ContainsFunc(calls, func(call string) bool { return strings.HasPrefix(call, "docker ") }),
+		"the build went on to pull imager: %v", calls)
+	assert.NoFileExists(t, filepath.Join(run.dir, "proc", "sysrq-trigger"), "the builder powered off")
 }
 
 func TestBuildImage_WritesTheDiskFromATmpfsNeverFromTheDiskItOverwrites(t *testing.T) {
