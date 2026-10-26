@@ -4,6 +4,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -75,10 +77,13 @@ func TestManifest_DeclaresANodeInEachLocationAndOneAPIAndOneIngressLoadBalancerI
 	assert.Equal(t, want, declared, "the declared resources and their types")
 }
 
-func TestHandler_BuildsFromTheManifestAndObservers(t *testing.T) {
-	_, err := handler.New(handlerConfig("https://api.mitstack.test/.well-known/jwks.json", nil))
-
+func TestHandler_BuildsFromTheManifestAndObserversAndClassesARefusalBeforeTheBlockRuns(t *testing.T) {
+	h, err := handler.New(handlerConfig("https://api.mitstack.test/.well-known/jwks.json", nil))
 	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/nope", nil))
+	assert.Contains(t, w.Body.String(), `"statusDetail":"refused:unknown-path: `)
 }
 
 func TestReadParams_EveryServerTypeTheBlockCreatesIsOneTheHetznerServerTypeAllows(t *testing.T) {

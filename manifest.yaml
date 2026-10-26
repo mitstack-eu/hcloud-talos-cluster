@@ -22,14 +22,13 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.11.1
+  version: 0.11.2
   releaseClass: correctness-fix
   releaseNote: >-
-    A subscribe no longer fails with image-build-failed when the image
-    builder starts its build a moment before its private network address
-    arrives. The build now waits up to two minutes for that address before
-    it routes through the gateway, and fails naming the interface if none
-    arrives.
+    The block builds on operator-kit v3.2.2, so every refusal it answers
+    before the block runs carries a refusal class, and a call it cannot
+    verify because the platform's signing keys cannot be fetched answers 503
+    rather than a refusal. Nothing else the block does changes.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
     control-plane node in each of fsn1, nbg1 and hel1 behind an API and an
