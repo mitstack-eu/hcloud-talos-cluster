@@ -63,8 +63,7 @@ const (
 	httpNodePort  = 30080
 	httpsNodePort = 30081
 
-	// buildDeadline bounds the builder from its creation to powering itself off, which it does once the image is on
-	// its disk and the gateway's mirror is complete, so it covers the slower of the build and the gateway's prepare.
+	// buildDeadline bounds the builder from its creation to powering off once its image is written and the mirror complete.
 	buildDeadline = 60 * time.Minute
 )
 
