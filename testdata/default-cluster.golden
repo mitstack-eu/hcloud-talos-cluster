@@ -53,8 +53,9 @@ mirror registry.k8s.io/kube-controller-manager:v1.37.1@sha256:d470c1b85aebb466e9
 mirror registry.k8s.io/kube-scheduler:v1.37.1@sha256:b6e2474a6c20309f0df1e7337364281fda95c6a0722259ba7f032a1e177d3f29
 mirror registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
 builder-file /root/mitstack-build/config.yaml 0600 gz+b64
-builder-file /usr/local/bin/mitstack-build-image 0755
-builder-run /usr/local/bin/mitstack-build-image ghcr.io/siderolabs/imager:v1.14.4@sha256:91d453a7cf57d499fe7fe7923e1e381b6e1535136367246d190e38486c11651d /root/mitstack-build/config.yaml 10.0.0.1
+builder-file /usr/local/bin/mitstack-build-image 0755 gz+b64
+builder-file /root/mitstack-build/gateway-ca.crt 0644
+builder-run /usr/local/bin/mitstack-build-image ghcr.io/siderolabs/imager:v1.14.4@sha256:91d453a7cf57d499fe7fe7923e1e381b6e1535136367246d190e38486c11651d /root/mitstack-build/config.yaml 10.0.0.1 https://10.0.0.2/manifests/ztunnel.yaml /root/mitstack-build/gateway-ca.crt
 document v1alpha1
 document DiscoveryIdentityConfig
 document FilesystemTrimConfig

@@ -150,7 +150,31 @@ func TestBuilder_EmbedsAConfigurationThatCarriesTheReportTheCredentialsAndTheApp
 	require.Len(t, networks, 1)
 	endpoint := testutil.Field(t, clusterDocs[0], "endpoint")
 	assert.Equal(t, "https://"+e.hetzner.loadBalancer(t, roleAPI).PrivateIPs[networks[0].ID]+":6443", endpoint, "the control-plane endpoint")
-	assert.Equal(t, []string{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress}, c.RunCmd[0], "the build command")
+	assert.Equal(t, []string{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress,
+		"https://10.0.0.2/manifests/" + lastServedManifest(t, e), "/root/mitstack-build/gateway-ca.crt"}, c.RunCmd[0], "the build command")
+}
+
+// lastServedManifest is the file the gateway's prepare fetches last, as its manifest list names it.
+func lastServedManifest(t *testing.T, e *env) string {
+	t.Helper()
+	kit := decodeCloudConfig(t, gatewayParts(t, e.hetzner.userData[e.hetzner.byRole(t, roleGateway)[0].ID])[0])
+	lines := strings.Split(strings.TrimSpace(kit.file(t, "/etc/mitstack-gateway/manifests.txt").Content), "\n")
+	return strings.Fields(lines[len(lines)-1])[0]
+}
+
+func TestBuilder_WaitsForTheManifestTheGatewaysPrepareFetchesLastUnderTheGatewaysOwnCA(t *testing.T) {
+	e := subscribedOnce(t)
+	kit := decodeCloudConfig(t, gatewayParts(t, e.hetzner.userData[e.hetzner.byRole(t, roleGateway)[0].ID])[0])
+
+	c := decodeCloudConfig(t, e.hetzner.userData[e.hetzner.byRole(t, roleBuilder)[0].ID])
+
+	require.Len(t, c.RunCmd, 1, "the builder's commands")
+	require.Len(t, c.RunCmd[0], 6, "the build command: %v", c.RunCmd[0])
+	assert.Equal(t, "https://10.0.0.2/manifests/"+lastServedManifest(t, e), c.RunCmd[0][4],
+		"the gateway's prepare fetches this manifest after every image and every other manifest")
+	ca := c.file(t, c.RunCmd[0][5])
+	assert.Equal(t, kit.file(t, "/etc/mitstack-gateway/ca.crt").Content, ca.Content, "the CA the builder trusts for the mirror")
+	assert.Equal(t, "0644", ca.Permissions, "the gateway CA's permissions")
 }
 
 func TestBuilder_TheAPIServersCertificateNamesTheAPILoadBalancer(t *testing.T) {

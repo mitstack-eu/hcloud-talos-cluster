@@ -130,9 +130,44 @@ func TestSubscribe_FailsOnceTheBuilderStillRunsPastItsDeadline(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, final.status, "the last answer: %s", final.detail)
 	assert.Contains(t, final.detail, "image-build-failed")
+	assert.Contains(t, final.detail, "the cluster's image was not built or the gateway's mirror never completed")
 	assert.Less(t, e.now.Sub(created), buildDeadline+5*time.Minute, "how long the subscription waited on a failed build after the builder's creation")
 	assert.Empty(t, e.hetzner.byRole(t, roleBuilder), "the builder past its deadline")
 	assert.Empty(t, e.hetzner.byRole(t, roleNode), "a node with no image")
+}
+
+func TestSubscribe_CreatesNoNodeBeforeTheBuilderReportsTheGatewaysMirrorComplete(t *testing.T) {
+	e := newEnv(t)
+	e.hetzner.mirrorTakes = 40 * time.Minute
+
+	obs := e.subscribe()
+
+	require.Equal(t, contract.Present, obs.State, "detail: %s", obs.StatusDetail)
+	complete, ok := e.hetzner.mirrorCompleteAt()
+	require.True(t, ok, "the gateway never ran")
+	nodes := e.hetzner.byRole(t, roleNode)
+	require.Len(t, nodes, 3, "nodes")
+	for _, node := range nodes {
+		assert.False(t, node.Created.Before(complete), "node %s was created at %s, before the gateway's mirror completed at %s",
+			node.Name, node.Created.Format(time.RFC3339), complete.Format(time.RFC3339))
+	}
+}
+
+func TestValidate_AnswersProgressWhileTheBuilderWaitsForTheGatewaysMirror(t *testing.T) {
+	e := newEnv(t)
+	e.hetzner.mirrorTakes = 40 * time.Minute
+	p := e.engine()
+	waiting := testStart.Add(35 * time.Minute)
+	last := p.settle(func() bool { return !e.now.Before(waiting) })
+	require.NoError(t, last.err(), "the subscribe gave up on a builder waiting for the gateway's mirror: %s", last.detail)
+	require.True(t, e.building(), "the builder no longer runs while the mirror fills")
+
+	v := p.post("validate")
+
+	require.Equal(t, http.StatusOK, v.status, "the validate: %s", v.detail)
+	assert.True(t, v.pending, "the validate while the mirror fills: %s", v.detail)
+	assert.Empty(t, e.hetzner.byRole(t, roleNode), "a node created before the gateway's mirror completed")
+	assert.Contains(t, v.observed(resCluster).StatusDetail, "is building the cluster's image or waiting for the gateway's mirror to complete")
 }
 
 func TestValidate_TheBuildProgressCarriesTheBuildersCPUAndDiskFromItsCreation(t *testing.T) {
