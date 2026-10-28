@@ -27,7 +27,7 @@ spec:
   releaseNote: >-
     The builder writes the cluster's image only once the gateway's image
     mirror is complete, so every node boots with its images in place and
-    starts its kubelet on first boot. A build may now take up to 45 minutes
+    starts its kubelet on first boot. A build may now take up to an hour
     before the block refuses it.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
@@ -38,8 +38,8 @@ spec:
     endpoint: https://api.mitstack.dev/operators/hcloud-talos-cluster/hook
     operations: [subscribe, unsubscribe, upgrade, validate]
     contract: kit/v1
-    # The image build and the gateway's mirror, the snapshot and the nodes' first boot take up to 60m.
-    settleBudget: 75m
+    # The image build and the gateway's mirror, the snapshot and the nodes' first boot take up to 75m.
+    settleBudget: 90m
     verbConnections:
       validate: [hetzner, github]
       unsubscribe: [hetzner, github]

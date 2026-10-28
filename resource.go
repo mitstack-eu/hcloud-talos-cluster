@@ -65,7 +65,7 @@ const (
 
 	// buildDeadline bounds the builder from its creation to powering itself off, which it does once the image is on
 	// its disk and the gateway's mirror is complete, so it covers the slower of the build and the gateway's prepare.
-	buildDeadline = 45 * time.Minute
+	buildDeadline = 60 * time.Minute
 )
 
 // gatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.

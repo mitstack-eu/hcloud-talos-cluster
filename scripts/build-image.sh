@@ -14,7 +14,7 @@
 #   BUILD_RESOLV_CONF, BUILD_PROC, BUILD_NET_CLASS, BUILD_ADDRESS_WAIT,
 #   BUILD_MIRROR_ATTEMPTS and BUILD_MIRROR_DELAY default to /mnt/mitstack-build,
 #   /var/lib/mitstack-build, /dev/sda, 30, /etc/resolv.conf, /proc,
-#   /sys/class/net, 120 seconds, 270 and 10 seconds.
+#   /sys/class/net, 120 seconds, 240 and 10 seconds.
 # It exists because the image embeds every key of the cluster, so it is built
 # inside the cluster's own Hetzner project and imager's output, which prints
 # that configuration, is discarded. A failed step leaves the builder running,
@@ -30,7 +30,8 @@ readonly resolv_conf=${BUILD_RESOLV_CONF:-/etc/resolv.conf}
 readonly proc=${BUILD_PROC:-/proc}
 readonly net_class=${BUILD_NET_CLASS:-/sys/class/net}
 readonly address_wait=${BUILD_ADDRESS_WAIT:-120}
-readonly mirror_attempts=${BUILD_MIRROR_ATTEMPTS:-270}
+# The imager build, about 40 minutes of retries and the disk write together stay inside the block's build deadline.
+readonly mirror_attempts=${BUILD_MIRROR_ATTEMPTS:-240}
 readonly mirror_delay=${BUILD_MIRROR_DELAY:-10}
 readonly staged="$work/bin"
 readonly resolvers=("185.12.64.1" "185.12.64.2")
