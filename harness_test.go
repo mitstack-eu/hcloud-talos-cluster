@@ -860,7 +860,7 @@ func (e *env) repo() string {
 }
 
 // settleBudget is the manifest's spec.lifecycle.settleBudget.
-const settleBudget = 75 * time.Minute
+const settleBudget = 90 * time.Minute
 
 // engine plays the platform's lifecycle engine against the block's own handler, as signed requests.
 type engine struct {
