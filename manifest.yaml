@@ -22,13 +22,16 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.11.3
+  version: 0.11.4
   releaseClass: correctness-fix
   releaseNote: >-
-    The builder writes the cluster's image only once the gateway's image
-    mirror is complete, so every node boots with its images in place and
-    starts its kubelet on first boot. A build may now take up to an hour
-    before the block refuses it.
+    The block builds on talos-cluster-kit v0.19.1 in place of v0.12.0. Its
+    node report gives each node's allocatable CPU, memory and pods, so an
+    app's slice on the cluster is sized against its nodes instead of refused
+    for want of a node report, and it lists the objects each Argo CD
+    Application applied. The gateway answers no image request before its
+    mirror is complete. A cluster built from an earlier release keeps its
+    components until it is subscribed again.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
     control-plane node in each of fsn1, nbg1 and hel1 behind an API and an
