@@ -30,7 +30,7 @@ readonly resolv_conf=${BUILD_RESOLV_CONF:-/etc/resolv.conf}
 readonly proc=${BUILD_PROC:-/proc}
 readonly net_class=${BUILD_NET_CLASS:-/sys/class/net}
 readonly address_wait=${BUILD_ADDRESS_WAIT:-120}
-# The imager build, about 40 minutes of retries and the disk write together stay inside the block's build deadline.
+# About 40 minutes of retries end before the block's 60-minute build deadline when imager takes under about 15 of them.
 readonly mirror_attempts=${BUILD_MIRROR_ATTEMPTS:-240}
 readonly mirror_delay=${BUILD_MIRROR_DELAY:-10}
 readonly staged="$work/bin"

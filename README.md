@@ -63,11 +63,11 @@ database. The cluster then signs up with mitstack once to get its tokens.
 The cluster boots in one order: the gateway, then its complete image mirror,
 then the nodes. A node pulls its Kubernetes images from the gateway's mirror
 alone. On one production cluster, nodes that booted before the mirror held
-them stayed down until Talos rebooted them about 70 minutes later. So `scripts/build-image.sh` builds the
-image while the gateway fills its mirror, then waits until the gateway serves
-the manifest its prepare script fetches last, and only then writes the image
-and powers off. The nodes start from that image, so they boot after the mirror
-is complete.
+them stayed down until Talos rebooted them about 70 minutes later. So
+`scripts/build-image.sh` builds the image while the gateway fills its mirror,
+then waits until the gateway serves the manifest its prepare script fetches
+last, and only then writes the image and powers off. The nodes start from that
+image, so they boot after the mirror is complete.
 
 ```mermaid
 sequenceDiagram

@@ -128,10 +128,10 @@ moves through these steps:
    therefore joins after the gateway, or it would take `10.0.0.2` itself.
 4. The builder builds the image with imager, Sidero Labs' image builder, waits
    until the gateway serves the manifest its prepare fetches last, which means
-   the mirror is complete, and powers itself off. imager first writes the whole uncompressed disk, about
-   4.2 GiB, into a directory on the builder's own disk. The builder then
-   copies the compressed image, about 230 MB, into memory, because `dd`
-   writes the image over that same disk. It also copies `bash`, `zstd`, `dd`,
+   the mirror is complete, and powers itself off. imager first writes the
+   whole uncompressed disk, about 4.2 GiB, into a directory on the builder's
+   own disk. The builder then copies the compressed image, about 230 MB, into
+   memory, because `dd` writes the image over that same disk. It also copies `bash`, `zstd`, `dd`,
    `sleep`, the dynamic loader and the libraries `ldd` names for them into
    memory. Then `fsfreeze -f /` flushes the root filesystem and blocks every
    later write to it. The copy of `bash` runs `zstd` into `dd`, each through
