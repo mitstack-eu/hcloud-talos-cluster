@@ -512,7 +512,7 @@ func TestBuilder_UserDataOverHetznersLimitFailsTheRender(t *testing.T) {
 	_, err := rand.Read(incompressible)
 	require.NoError(t, err)
 
-	_, err = builderUserData(incompressible)
+	_, err = builderUserData(incompressible, nil, "https://10.0.0.2/manifests/last.yaml")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "over Hetzner's 32768")
