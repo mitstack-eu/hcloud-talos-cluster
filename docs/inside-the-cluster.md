@@ -80,7 +80,9 @@ reads began. `subscriptionResourceKinds` names each object type whose read
 finished whole. When a report made after an unsubscribe leaves out an object
 of such a type, mitstack reads that object as gone. It reads a left-out object
 of any other type as unknown. The report
-may read no Secret, so Secret is never one of those types.
+may read no Secret, so Secret is never one of those types. Each node it lists
+in `nodes` carries `allocatable`, the CPU, memory and pods the node can give
+its workloads, which an app's slice sizes its quota against.
 Each read runs under a time limit. When any other read, or the build of the
 report itself, fails or times out, the cluster posts a report holding only an
 `error` that names the read, its exit status or that it timed out, and the end
@@ -109,7 +111,7 @@ only a new subscribe gets a newer kit's components.
 The node report, the enrolment Job and the token renewal run in the
 talos-cluster-kit tools image, which the kit's own release publishes and signs.
 The block takes it from `tools.Image` in the kit release `go.mod` requires,
-such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.12.0@sha256:7fa01ea4…`.
+such as `ghcr.io/mitstack-eu/talos-cluster-kit-tools:v0.19.1@sha256:9fb0e588…`.
 A build against a kit whose `tools.Image` carries the `unreleased` placeholder
 tag refuses every subscribe.
 
