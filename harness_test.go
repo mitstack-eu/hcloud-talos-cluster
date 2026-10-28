@@ -56,6 +56,8 @@ type fakeHetzner struct {
 	now            func() time.Time
 	// started and imaging hold when each server was powered on and each snapshot was started.
 	started, imaging map[int64]time.Time
+	// mirrorTakes is how long the gateway's mirror fills from its power-on; no builder powers itself off before then.
+	mirrorTakes time.Duration
 	// waits counts the calls the adapter waits on a Hetzner action for, and writes every call that changes something.
 	waits, writes int
 	// instantBuild powers each builder off as it is powered on, and images each snapshot as it starts.
@@ -495,12 +497,15 @@ func (f *fakeHetzner) DeleteSnapshot(_ context.Context, id int64) error {
 }
 
 // advance plays what Hetzner and the builder finish on their own: a builder powers itself off build after its
-// power-on, unless build is zero, and a snapshot is available image after it started.
+// power-on, unless build is zero, and no sooner than the gateway's mirror completes, and a snapshot is available
+// image after it started.
 func (f *fakeHetzner) advance(build, image time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	complete, mirrored := f.mirrorCompleteAt()
 	for id, s := range f.servers {
-		if s.Labels[keyRole] == string(roleBuilder) && s.Status == serverRunning && build > 0 && !f.now().Before(f.started[id].Add(build)) {
+		if s.Labels[keyRole] == string(roleBuilder) && s.Status == serverRunning && build > 0 && !f.now().Before(f.started[id].Add(build)) &&
+			mirrored && !f.now().Before(complete) {
 			s.Status = serverOff
 		}
 	}
@@ -509,6 +514,17 @@ func (f *fakeHetzner) advance(build, image time.Duration) {
 			snap.Status = snapshotAvailable
 		}
 	}
+}
+
+// mirrorCompleteAt is when the gateway's mirror completes, mirrorTakes after the gateway's power-on; with no gateway
+// powered on, the mirror is complete only when mirrorTakes is zero.
+func (f *fakeHetzner) mirrorCompleteAt() (time.Time, bool) {
+	for id, s := range f.servers {
+		if started, ok := f.started[id]; ok && s.Labels[keyRole] == string(roleGateway) {
+			return started.Add(f.mirrorTakes), true
+		}
+	}
+	return time.Time{}, f.mirrorTakes == 0
 }
 
 // resources is every resource but the builder, as text, so a later read shows any change to one made before.
@@ -844,7 +860,7 @@ func (e *env) repo() string {
 }
 
 // settleBudget is the manifest's spec.lifecycle.settleBudget.
-const settleBudget = 60 * time.Minute
+const settleBudget = 90 * time.Minute
 
 // engine plays the platform's lifecycle engine against the block's own handler, as signed requests.
 type engine struct {

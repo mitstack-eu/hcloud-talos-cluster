@@ -63,8 +63,8 @@ const (
 	httpNodePort  = 30080
 	httpsNodePort = 30081
 
-	// buildDeadline bounds the builder from its creation to powering itself off with the image on its disk.
-	buildDeadline = 30 * time.Minute
+	// buildDeadline bounds the builder from its creation to powering off once its image is written and the mirror complete.
+	buildDeadline = 60 * time.Minute
 )
 
 // gatewayServerTypes are the gateway's types by preference, so one sold-out type does not stop a cluster.
@@ -346,7 +346,7 @@ func builderStep(ctx context.Context, c convergence, builder hcServer) (step, bo
 				return fmt.Errorf("deleting the builder %d that did not finish: %w", builder.ID, err)
 			}
 			return handler.Refuse("image-build-failed",
-				"the builder did not power itself off within %s of its creation, so the cluster's image was not built and the builder is deleted; %s; unsubscribe and subscribe again to rebuild the cluster",
+				"the builder did not power itself off within %s of its creation, so the cluster's image was not built or the gateway's mirror never completed, and the builder is deleted; %s; unsubscribe and subscribe again to rebuild the cluster",
 				buildDeadline, metrics.stall())
 		}}, true, nil
 	case serverOff:

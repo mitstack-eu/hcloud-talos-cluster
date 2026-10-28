@@ -10,7 +10,7 @@ and on [Params, connections and outputs](reference.md).
 
 ## Why the operator takes one step per request
 
-mitstack gives each request two minutes, and a cluster takes up to 45 minutes
+mitstack gives each request two minutes, and a cluster takes up to 90 minutes
 to build. The operator therefore builds the cluster one step per request, and
 mitstack sends a fresh request until the cluster is ready. Every Hetzner
 resource carries the subscription id as a label, so each request finds the
@@ -59,7 +59,7 @@ allows targets in other locations of the load balancer's network zone, here
 | Gateway | The only server with a public address, in `fsn1`. It runs the kit's cloud-config, which forwards and records the nodes' DNS, NTP and HTTPS and serves their image mirror. It is a `cx23`, or a `cpx22` when Hetzner reads `cx23` as sold out in `fsn1` | `install` and `orderableGatewayType` in `install.go` |
 | API load balancer, in `fsn1` | Carries the Kubernetes API on port 6443 on the private network to every node, with no public interface | `apiLoadBalancer` and `loadBalancerStep` in `resource.go` |
 | Ingress load balancer, in `fsn1` | Serves ports 80 and 443 on its public address to every node's NodePorts 30080 and 30081, with PROXY protocol | `ingressLoadBalancer` and `loadBalancerStep` in `resource.go` |
-| Builder | A short-lived server in `fsn1`, of the subscription's `serverType` like the nodes, that builds the image with imager, writes it over its own disk and powers off. Its private address comes from DHCP through Hetzner's `hc-net-ifup` unit, and cloud-init's final stage can start the script before that lease lands, so the script first waits up to two minutes for the lease and its route to `10.0.0.1`. It freezes its root filesystem before the write, and copies of `bash`, `zstd`, `dd` and `sleep` in memory then write the image, wait a second and power it off, so the script runs nothing from the disk being overwritten. The wait guards against a `cpx32` builder staying on after the power-off request, and whether it prevents that is not yet established. Its user data carries the machine configuration gzipped, in cloud-init's `gz+b64` encoding, since as text it is over Hetzner's 32 KiB user data limit | `install` in `install.go`, `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
+| Builder | A short-lived server in `fsn1`, of the subscription's `serverType` like the nodes, that builds the image with imager, writes it over its own disk and powers off. Its private address comes from DHCP through Hetzner's `hc-net-ifup` unit, and cloud-init's final stage can start the script before that lease lands, so the script first waits up to two minutes for the lease and its route to `10.0.0.1`. It freezes its root filesystem before the write, and copies of `bash`, `zstd`, `dd` and `sleep` in memory then write the image, wait a second and power it off, so the script runs nothing from the disk being overwritten. The wait guards against a `cpx32` builder staying on after the power-off request, and whether it prevents that is not yet established. Before the write it waits until the gateway serves the manifest its prepare fetches last, under the gateway's CA, which its user data carries, so no node boots before the mirror is complete. Its user data carries the machine configuration and the script gzipped, in cloud-init's `gz+b64` encoding, since as text they are over Hetzner's 32 KiB user data limit | `install` in `install.go`, `builderUserData` in `userdata.go`, `scripts/build-image.sh` |
 | Snapshot | The builder's disk, which every node boots from | `builderStep` in `resource.go` |
 | Node, one per location | A control-plane node booted from the snapshot and named after its location, such as `shop-sub-0123-node-nbg1` | `missingNodeStep` and `createNode` in `resource.go` |
 | Cluster repository | A private GitHub repository, `<appName>-cluster`, that Argo CD syncs | `repository.go` |
@@ -126,11 +126,12 @@ moves through these steps:
    builder, which pulls imager through the gateway. Hetzner gives a server
    that joins with no address the network's first free one. The builder
    therefore joins after the gateway, or it would take `10.0.0.2` itself.
-4. The builder builds the image with imager, Sidero Labs' image builder, and
-   powers itself off. imager first writes the whole uncompressed disk, about
-   4.2 GiB, into a directory on the builder's own disk. The builder then
-   copies the compressed image, about 230 MB, into memory, because `dd`
-   writes the image over that same disk. It also copies `bash`, `zstd`, `dd`,
+4. The builder builds the image with imager, Sidero Labs' image builder, waits
+   until the gateway serves the manifest its prepare fetches last, which means
+   the mirror is complete, and powers itself off. imager first writes the
+   whole uncompressed disk, about 4.2 GiB, into a directory on the builder's
+   own disk. The builder then copies the compressed image, about 230 MB, into
+   memory, because `dd` writes the image over that same disk. It also copies `bash`, `zstd`, `dd`,
    `sleep`, the dynamic loader and the libraries `ldd` names for them into
    memory. Then `fsfreeze -f /` flushes the root filesystem and blocks every
    later write to it. The copy of `bash` runs `zstd` into `dd`, each through

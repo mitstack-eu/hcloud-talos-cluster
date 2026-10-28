@@ -27,8 +27,9 @@ const (
 	cloudConfigHeader = "#cloud-config\n"
 	userDataBoundary  = "mitstack-hcloud-talos-cluster"
 
-	builderConfigPath = "/root/mitstack-build/config.yaml"
-	builderScriptPath = "/usr/local/bin/mitstack-build-image"
+	builderConfigPath    = "/root/mitstack-build/config.yaml"
+	builderScriptPath    = "/usr/local/bin/mitstack-build-image"
+	builderGatewayCAPath = "/root/mitstack-build/gateway-ca.crt"
 
 	bootstrapTalosconfigPath = "/etc/mitstack-gateway/admin-talosconfig"
 	bootstrapScriptPath      = "/usr/local/bin/mitstack-bootstrap-first-node"
@@ -65,18 +66,24 @@ func (c cloudConfig) render() (string, error) {
 }
 
 // builderUserData holds every key of the cluster, which is why the builder is deleted once its disk is a snapshot.
-// The configuration is gzipped, since as text it is over Hetzner's user data limit, and a result still over it is refused.
-func builderUserData(machineConfig []byte) (string, error) {
+// The configuration and the script are gzipped, since as text they pass Hetzner's user data limit, and a result still
+// over it is refused. The builder writes its disk once mirrorURL answers under gatewayCA.
+func builderUserData(machineConfig, gatewayCA []byte, mirrorURL string) (string, error) {
 	config, err := gzipBase64(machineConfig)
+	if err != nil {
+		return "", err
+	}
+	script, err := gzipBase64([]byte(buildImageScript))
 	if err != nil {
 		return "", err
 	}
 	out, err := cloudConfig{
 		WriteFiles: []cloudFile{
 			{Path: builderConfigPath, Permissions: "0600", Content: config, Encoding: gzipBase64Encoding},
-			{Path: builderScriptPath, Permissions: "0755", Content: buildImageScript},
+			{Path: builderScriptPath, Permissions: "0755", Content: script, Encoding: gzipBase64Encoding},
+			{Path: builderGatewayCAPath, Permissions: "0644", Content: string(gatewayCA)},
 		},
-		RunCmd: [][]string{{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress}},
+		RunCmd: [][]string{{builderScriptPath, image.PinnedImager, builderConfigPath, routerAddress, mirrorURL, builderGatewayCAPath}},
 	}.render()
 	if err != nil {
 		return "", err
@@ -94,13 +101,13 @@ func gzipBase64(content []byte) (string, error) {
 	var zipped bytes.Buffer
 	w, err := gzip.NewWriterLevel(&zipped, gzip.BestCompression)
 	if err != nil {
-		return "", fmt.Errorf("compressing the builder's configuration: %w", err)
+		return "", fmt.Errorf("compressing the builder's user data: %w", err)
 	}
 	if _, err := w.Write(content); err != nil {
-		return "", fmt.Errorf("compressing the builder's configuration: %w", err)
+		return "", fmt.Errorf("compressing the builder's user data: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return "", fmt.Errorf("compressing the builder's configuration: %w", err)
+		return "", fmt.Errorf("compressing the builder's user data: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(zipped.Bytes()), nil
 }

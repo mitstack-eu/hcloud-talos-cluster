@@ -172,7 +172,11 @@ func renderInstallation(in installInputs) (installation, error) {
 	if err != nil {
 		return installation{}, err
 	}
-	builderData, err := builderUserData(config)
+	mirrorURL, err := mirrorCompleteURL(set)
+	if err != nil {
+		return installation{}, err
+	}
+	builderData, err := builderUserData(config, gatewayCA.Cert, mirrorURL)
 	if err != nil {
 		return installation{}, err
 	}
@@ -180,6 +184,15 @@ func renderInstallation(in installInputs) (installation, error) {
 		gatewayUserData: gatewayData, builderUserData: builderData,
 		enrolmentDigest: enrolmentTokenDigest(token), issuerBucket: bucket,
 	}, nil
+}
+
+// mirrorCompleteURL is the served manifest the gateway's prepare fetches last, after mirroring every image and stopping
+// at the first failure, so its answer means the mirror is complete.
+func mirrorCompleteURL(set components.Set) (string, error) {
+	if len(set.Served) == 0 {
+		return "", errors.New("the cluster's component set serves no manifest, so the builder has nothing that marks the gateway's mirror complete")
+	}
+	return "https://" + gatewayAddress + "/manifests/" + set.Served[len(set.Served)-1].Name + ".yaml", nil
 }
 
 func renderGateway(in installInputs, ca gateway.CA, set components.Set, secrets *nodeconfig.Secrets) (string, error) {

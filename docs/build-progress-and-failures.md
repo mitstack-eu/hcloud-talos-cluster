@@ -31,8 +31,10 @@ builder in the proof project read 118.7% while imager ran.
 
 ## When a build fails
 
-A builder still running 30 minutes after its creation has failed, since its
-script leaves a failed build running. A failed `zstd` or `dd` after the freeze
+A builder still running 60 minutes after its creation has failed, since its
+script leaves a failed build running. A gateway mirror that never completes
+leaves it running too, since the builder powers off only once the mirror is
+complete. A failed `zstd` or `dd` after the freeze
 ends the script before the power-off, so it also leaves the builder running.
 So does a private interface that gets no address within two minutes, and the
 script's last line in the builder's cloud-init output names that interface.
@@ -46,7 +48,7 @@ stays under. The bytes written since creation tell a builder that never wrote
 its 4.2 GiB image from one that wrote it and stopped later:
 
 ```text
-refused:image-build-failed: the builder did not power itself off within 30m0s of its creation, so the cluster's image was not built and the builder is deleted; Hetzner reads its CPU at 2.0% over the last minute, 0 B written to disk over the last minute and 120.0 MiB since its creation; its disk last moved at 2026-10-21T12:03:45Z; its CPU was last above 10% at 2026-10-21T12:05:45Z; unsubscribe and subscribe again to rebuild the cluster
+refused:image-build-failed: the builder did not power itself off within 1h0m0s of its creation, so the cluster's image was not built or the gateway's mirror never completed, and the builder is deleted; Hetzner reads its CPU at 2.0% over the last minute, 0 B written to disk over the last minute and 120.0 MiB since its creation; its disk last moved at 2026-10-21T12:03:45Z; its CPU was last above 10% at 2026-10-21T12:05:45Z; unsubscribe and subscribe again to rebuild the cluster
 ```
 
 A metrics read that fails never fails validate or the refusal. The text then
