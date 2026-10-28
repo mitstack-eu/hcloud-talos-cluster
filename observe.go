@@ -304,7 +304,7 @@ func (b hcServer) buildDetail(ctx context.Context, api hetznerAPI) string {
 	if b.Status != serverRunning {
 		return fmt.Sprintf("builder %d, created at %s, is %s", b.ID, created, b.Status)
 	}
-	state := "is building the cluster's image"
+	state := "is building the cluster's image or waiting for the gateway's mirror to complete"
 	if clock().Sub(b.Created) >= buildDeadline {
 		state = fmt.Sprintf("did not power itself off within %s", buildDeadline)
 	}

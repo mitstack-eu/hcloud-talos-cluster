@@ -22,13 +22,13 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.11.2
+  version: 0.11.3
   releaseClass: correctness-fix
   releaseNote: >-
-    The block builds on operator-kit v3.2.2, so every refusal it answers
-    before the block runs carries a refusal class, and a call it cannot
-    verify because the platform's signing keys cannot be fetched answers 503
-    rather than a refusal. Nothing else the block does changes.
+    The builder writes the cluster's image only once the gateway's image
+    mirror is complete, so every node boots with its images in place and
+    starts its kubelet on first boot. A build may now take up to 45 minutes
+    before the block refuses it.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
     control-plane node in each of fsn1, nbg1 and hel1 behind an API and an
@@ -38,8 +38,8 @@ spec:
     endpoint: https://api.mitstack.dev/operators/hcloud-talos-cluster/hook
     operations: [subscribe, unsubscribe, upgrade, validate]
     contract: kit/v1
-    # The image build, its snapshot and the nodes' first boot take up to 45m.
-    settleBudget: 60m
+    # The image build and the gateway's mirror, the snapshot and the nodes' first boot take up to 60m.
+    settleBudget: 75m
     verbConnections:
       validate: [hetzner, github]
       unsubscribe: [hetzner, github]

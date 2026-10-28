@@ -47,18 +47,27 @@ block. [Params, connections and outputs](docs/reference.md) has every table.
    Connect it and GitHub on the mitstack console's [Capabilities page](https://api.mitstack.dev/capabilities).
 2. Open this block on the console's [Blocks page](https://api.mitstack.dev/blocks), choose
    **Add to an app**, pick your app, and fill in `appName`.
-3. Once the console shows the subscription ready, in up to 45 minutes, commit
+3. Once the console shows the subscription ready, in up to an hour, commit
    your Kubernetes manifests to the repo's `cluster/` folder.
 
 ## How it works
 
-A cluster takes up to 45 minutes to build, but mitstack waits only two minutes
+A cluster takes up to an hour to build, but mitstack waits only two minutes
 for each answer. So the operator, the program in this repository, does one
 small step each time mitstack asks, and mitstack keeps asking until it is done.
 
 A short-lived builder server makes the disk image every node starts from. The
 gateway, the only server with a public address, starts etcd, the cluster's
 database. The cluster then signs up with mitstack once to get its tokens.
+
+The cluster boots in one order: the gateway, then its complete image mirror,
+then the nodes. A node pulls its Kubernetes images from the gateway's mirror
+alone, and a node that boots before the mirror holds them stays down until
+Talos reboots it about 70 minutes later. So `scripts/build-image.sh` builds the
+image while the gateway fills its mirror, then waits until the gateway serves
+the manifest its prepare script fetches last, and only then writes the image
+and powers off. The nodes start from that image, so they boot after the mirror
+is complete.
 
 ```mermaid
 sequenceDiagram

@@ -7,11 +7,14 @@
 # failure in that overwrite ends it before the power-off.
 # It waits a second before the power-off: an unproven guard against cpx32 builders staying on.
 # It waits for the private interface's DHCP lease before routing, since cloud-init can start it before Hetzner's hc-net-ifup has one.
-# Usage: build-image.sh <imager image by digest> <machine configuration> <network router>
+# It writes the disk only once the gateway's mirror answers under the gateway's
+# CA, so the snapshot, and every node booted from it, follows a complete mirror.
+# Usage: build-image.sh <imager image by digest> <machine configuration> <network router> <mirror URL> <gateway CA>
 #   BUILD_WORK_DIR, BUILD_OUT_DIR, BUILD_DISK, BUILD_PULL_ATTEMPTS,
-#   BUILD_RESOLV_CONF, BUILD_PROC, BUILD_NET_CLASS and BUILD_ADDRESS_WAIT
-#   default to /mnt/mitstack-build, /var/lib/mitstack-build, /dev/sda, 30,
-#   /etc/resolv.conf, /proc, /sys/class/net and 120 seconds.
+#   BUILD_RESOLV_CONF, BUILD_PROC, BUILD_NET_CLASS, BUILD_ADDRESS_WAIT,
+#   BUILD_MIRROR_ATTEMPTS and BUILD_MIRROR_DELAY default to /mnt/mitstack-build,
+#   /var/lib/mitstack-build, /dev/sda, 30, /etc/resolv.conf, /proc,
+#   /sys/class/net, 120 seconds, 270 and 10 seconds.
 # It exists because the image embeds every key of the cluster, so it is built
 # inside the cluster's own Hetzner project and imager's output, which prints
 # that configuration, is discarded. A failed step leaves the builder running,
@@ -27,6 +30,8 @@ readonly resolv_conf=${BUILD_RESOLV_CONF:-/etc/resolv.conf}
 readonly proc=${BUILD_PROC:-/proc}
 readonly net_class=${BUILD_NET_CLASS:-/sys/class/net}
 readonly address_wait=${BUILD_ADDRESS_WAIT:-120}
+readonly mirror_attempts=${BUILD_MIRROR_ATTEMPTS:-270}
+readonly mirror_delay=${BUILD_MIRROR_DELAY:-10}
 readonly staged="$work/bin"
 readonly resolvers=("185.12.64.1" "185.12.64.2")
 
@@ -73,6 +78,15 @@ pull_imager() {
     sleep 10
   done
   fail "could not pull $1 after $attempts attempts"
+}
+
+# await_mirror waits for the gateway's mirror, which answers only once it is complete.
+await_mirror() {
+  local url=$1 ca=$2
+  if ! curl -sSf --proto '=https' --cacert "$ca" --connect-timeout 5 --max-time 30 \
+    --retry "$mirror_attempts" --retry-delay "$mirror_delay" --retry-all-errors -o /dev/null "$url"; then
+    fail "the gateway's mirror at $url did not answer after $mirror_attempts retries"
+  fi
 }
 
 # build runs imager with the kit's arguments and discards its output, since it prints every key of the configuration.
@@ -138,11 +152,12 @@ write_disk() {
 }
 
 main() {
-  [ "$#" -eq 3 ] || fail "usage: build-image.sh <imager image> <machine configuration> <network router>"
+  [ "$#" -eq 5 ] || fail "usage: build-image.sh <imager image> <machine configuration> <network router> <mirror URL> <gateway CA>"
   await_lease "$3"
   route_through_gateway "$3"
   pull_imager "$1"
   build "$1" "$2"
+  await_mirror "$4" "$5"
   write_disk
 }
 
