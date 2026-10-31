@@ -4,6 +4,7 @@ go 1.26.10
 
 require (
 	github.com/hetznercloud/hcloud-go/v2 v2.49.0
+	github.com/mitstack-eu/block-kit/helpers/healthz v0.1.0
 	github.com/mitstack-eu/operator-kit/v3 v3.2.2
 	github.com/mitstack-eu/talos-cluster-kit v0.19.1
 	github.com/stretchr/testify v1.12.1

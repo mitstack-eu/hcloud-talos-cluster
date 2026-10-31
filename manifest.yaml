@@ -22,16 +22,12 @@ metadata:
   name: Hetzner Talos cluster
   owner: mitstack
 spec:
-  version: 0.11.4
+  version: 0.11.5
   releaseClass: correctness-fix
   releaseNote: >-
-    The block builds on talos-cluster-kit v0.19.1 in place of v0.12.0. Its
-    node report gives each node's allocatable CPU, memory and pods, so an
-    app's slice on the cluster is sized against its nodes instead of refused
-    for want of a node report, and it lists the objects each Argo CD
-    Application applied. The gateway answers no image request before its
-    mirror is complete. A cluster built from an earlier release keeps its
-    components until it is subscribed again.
+    hcloud-talos-cluster 0.11.5 runs as uid and gid 10001 with HOME at /tmp,
+    so it starts under kube-app-deploy's pod security, and answers /healthz
+    from block-kit's helpers/healthz handler.
   description: >
     Runs a three-node Talos Kubernetes cluster on Hetzner Cloud, a
     control-plane node in each of fsn1, nbg1 and hel1 behind an API and an

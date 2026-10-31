@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mitstack-eu/block-kit/helpers/healthz"
 	"github.com/mitstack-eu/operator-kit/v3/handler"
 	"github.com/mitstack-eu/operator-kit/v3/webhook"
 )
@@ -53,18 +54,20 @@ func main() {
 		log.Fatalf("building the lifecycle handler: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	// The platform's secret-leak and teardown gates select an operator on the bare "/hook" literal.
-	mux.HandleFunc("/hook", h.Serve)
-	mux.HandleFunc("/logs", h.Serve)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	mux := routes(h.Serve)
 
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 	log.Printf("operator listening on %s", addr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("serving: %v", err)
 	}
+}
+
+func routes(hook http.HandlerFunc) *http.ServeMux {
+	mux := http.NewServeMux()
+	// The platform's secret-leak and teardown gates select an operator on the bare "/hook" literal.
+	mux.HandleFunc("/hook", hook)
+	mux.HandleFunc("/logs", hook)
+	mux.Handle(healthz.Path, healthz.Handler())
+	return mux
 }
